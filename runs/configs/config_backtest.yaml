@@ -1,0 +1,316 @@
+﻿# =========================
+# Global / Seeds
+# =========================
+seed: 1508
+
+# =========================
+# Data Inputs (Universe/Processing outputs)
+# =========================
+data:
+  input_mode: "analysis_meta"          # explicit | analysis_meta
+  analysis_meta_path: "runs/data/filtered_pairs.meta.json"
+  prices_path: "runs/data/processed/filled_prices_panel_exec.parquet"
+  pairs_path: "runs/data/filtered_pairs.pkl"
+  adv_map_path: "runs/data/adv_map_usd_filtered.csv"
+  calendar_name: "XNYS"
+  prefer_col: "close"
+
+# =========================
+# Backtest Engine (windowing + calendar)
+# =========================
+backtest:
+  initial_capital: 1000000.0
+  risk_per_trade: 0.05
+  execution_lag_bars: 1        # central fill lag between signal and executed position
+  calendar_mapping: "prior"       # prior | strict | next
+  settlement_lag_bars: 1
+  # Walkforward (expanding or rolling train):
+  # - If range.start is omitted, it defaults to "analysis_end + 1 session" inferred from:
+  #   runs/configs/config_analysis.yaml -> data_analysis.train_cutoff_local
+  range:
+    start: null
+    end: null
+    analysis_cfg_path: "runs/configs/config_analysis.yaml"
+
+  walkforward:
+    enabled: true
+    train_mode: "rolling"         # expanding | rolling
+    initial_train_months: 36
+    test_months: 12
+    step_months: 12                  # must be >= test_months (overlapping test windows are rejected)
+
+# =========================
+# Strategy / Signals (Baseline)
+# =========================
+strategy:
+  name: "baseline"
+  pair_z_window_as_volatility_window: true
+
+# Portfolio-level Risk Manager (controls e.g. max concurrent open pairs).
+risk:
+  enabled: true
+  max_open_positions: 10
+  max_trade_pct: 0.30
+  max_gross_exposure: 2.5
+  max_net_exposure: 0.3
+  # Concentration controls: cap per-symbol gross exposure and repeated reuse of the same name.
+  max_per_name_pct: 0.35
+  max_positions_per_symbol: 2
+  # Short-availability heuristic using the static ADV exported by processing.
+  short_availability_heuristic:
+    enabled: true
+    min_price: 5.0
+    min_adv_usd: 2000000.0
+    block_on_missing: true
+
+signal:
+  entry_z: 2.5
+  exit_z: 0.8
+  stop_z: 4.5
+  max_hold_days: 60  # fallback only when pair half-life metadata is unavailable
+  cooldown_days: 5
+  volatility_window: 30
+
+# Optional overlay on the baseline entry rule.
+# If disabled, the strategy is exactly the baseline Z-score implementation.
+markov_filter:
+  enabled: false
+  horizon_days: 10
+  min_revert_prob: 0.55
+  min_train_observations: 30
+  min_state_observations: 5
+  transition_smoothing: 0.0
+  neutral_z: null   # default: signal.exit_z
+  entry_z: null     # default: signal.entry_z
+
+# Pair prefilter: Engle-Granger + per-pair half-life-derived runtime params
+pair_prefilter:
+  prefilter_active: true
+  coint_alpha: 0.2
+  min_obs: 20
+  half_life:
+    min_days: 5
+    max_days: 90
+    max_hold_multiple: 2.0
+    min_derived_days: 5
+
+spread_zscore:
+  z_window: 45  # fallback only when pair half-life metadata is unavailable
+  z_min_periods: 5
+  # If true, freeze mean/std from TRAIN and apply to all periods (stricter OOS).
+  freeze_stats: false
+
+# =========================
+# Borrow
+# =========================
+borrow:
+  enabled: true
+  accrual_mode: "mtm_daily"      # entry_notional | mtm_daily
+  day_count: "calendar_days"     # busdays | calendar_days | sessions
+  include_exit_day: true         # conservative for daily bars (exit executed at close)
+  min_days: 1
+  day_basis: 360
+  default_rate_annual: 0.02
+  per_asset_rate_annual: {}
+  rates: [] # (date, symbol, rate_annual)
+  rate_series_by_symbol: {} # (SYMBOL -> {date: rate_annual} oder Liste)
+  availability: [] # (date, symbol, available in {0,1})
+
+# =========================
+# Execution (LOB or light)
+# =========================
+execution:
+  mode: "lob"                   # lob | light
+  max_participation: 0.10
+  light:
+    enabled: true
+    reject_on_missing_price: true
+    fees:
+      per_trade: 0.25
+      bps: 1.0
+      per_share: 0.0
+      min_fee: 0.0
+      max_fee: 0.0
+  lob:
+    tick: 0.01
+    levels: 5
+    size_per_level: 1000
+    min_spread_ticks: 1
+    steps_per_day: 4
+    lam: 2.0
+    max_add: 500
+    bias_top: 0.7
+    cancel_prob: 0.15
+    max_cancel: 200
+    # Symbol-/date-aware liquidity model (free-data heuristic; uses OHLCV + ADV).
+    # If enabled, the engine will dynamically set spread + per-level depth + lam/cancel based on:
+    #   - rolling volatility (log-returns)
+    #   - rolling $ADV (median of close*volume)
+    liq_model:
+      enabled: true
+      # Shift liquidity lookups by 1 bar (past-only).
+      asof_shift: 1
+      vol_window: 30
+      adv_window: 60
+      min_periods_frac: 0.5
+      # Calibrated (see runs/results/calibration/* and src/backtest/calibration/README.md)
+      spread_floor_bps: 1.0
+      spread_sigma_mult: 0.005
+      spread_adv_mult: 15.0
+      adv_ref_usd: 1000000.0
+      depth_frac_of_adv_shares: 0.001
+      depth_gamma: 0.7
+      min_depth_shares: 25
+      max_depth_shares: 250000
+      min_level_shares: 1
+      lam_adv_power: 0.25
+      lam_min: 0.25
+      lam_max: 25.0
+      cancel_base: 0.15
+      cancel_sigma_mult: 1.5
+      cancel_min: 0.01
+      cancel_max: 0.9
+      max_add_frac_of_top: 0.5
+      max_cancel_frac_of_top: 0.25
+      max_add_min: 50
+      max_cancel_min: 25
+      max_add_max: 50000
+      max_cancel_max: 50000
+      tick_subpenny: 0.0001
+      tick_penny: 0.01
+      tick_switch_price: 1.0
+    stress_model:
+      enabled: true
+      intensity: 1.0
+      max_entry_delay_days: 1
+      max_exit_grace_days: 2
+      panic_cross_bps: 50.0
+    # Fill uncertainty (heuristic; optional). Scales executed size down based on
+    # size-vs-depth, participation-vs-ADV, and volatility (stochastic but seeded).
+    fill_model:
+      enabled: true
+      base_fill: 1.0
+      # Paper-compare preset: keep realism (partial fills) but reduce "too harsh" rejects.
+      safe_depth_share: 0.25
+      depth_share_50: 0.50
+      depth_shape: 1.5
+      safe_participation: 0.002
+      participation_50: 0.008
+      participation_shape: 1.2
+      sigma_mult: 1.5
+      beta_kappa_base: 75.0
+      beta_kappa_adv_power: 0.2
+      beta_kappa_min: 10.0
+      beta_kappa_max: 500.0
+      allow_reject: true
+      reject_below: 0.002
+      min_fill_if_filled: 0.01
+    post_costs:
+      per_trade: 0.0
+      maker_bps: -0.1
+      taker_bps: 0.30
+      maker_per_share: 0.0
+      taker_per_share: 0.0
+      min_fee: 0.0
+      max_fee: 0.0
+    # Entry/exit order-flow mix (maker/taker).
+    order_flow:
+      mode: "mixed"              # taker | maker | mixed
+      maker_prob: 0.5
+      maker_price: "best"        # best | mid
+      maker_max_top_frac: 0.25
+      maker_touch_prob: 0.7      # if limit is touched, probability of actual maker fill (queue realism)
+      fallback_to_taker: true
+      entry:
+        mode: "mixed"
+        maker_prob: 0.6
+      exit:
+        mode: "taker"
+
+# =========================
+# Validation / Robustness
+# =========================
+pit_guard:
+  enabled: false
+  test_len: null
+  availability_scope: "all"
+  noise_sigma: 0.01
+  seed: null
+  atol_equity: 0.0
+  rtol_equity: 0.0
+  compare_trades: true
+  compare_costs: true
+  compare_forced: true
+  tol_cost_abs: 1e-9
+
+overfit:
+  enabled: false
+  trials_paths: []
+  aggregate: "median"  # median | mean | max
+  trading_days: 252
+  out_relpath: "overfit_summary.json"
+
+# =========================
+# Reporting
+# =========================
+reporting:
+  mode: "core"           # core | debug
+  train_visuals: ["cv_scores", "equity"]
+  test_tearsheet:
+    enabled: true
+    dpi: 150
+
+# =========================
+# Bayesian Optimization
+# =========================
+bo:
+  enabled: true
+  mode: "realistic"               # fast | realistic
+  # If markov_filter.enabled=true, BO must stay in realistic mode because
+  # the Markov stage-2 search is not supported in the fast simulator path.
+  out_dir: "runs/results/bo"
+
+  fast:
+    cv:
+      enabled: true
+      scheme: "blocked"     # blocked | cpcv
+      n_blocks: 5
+      k_test_blocks: 3
+      purge: 30
+      embargo: 0.02
+      max_folds: 32
+      aggregate: "median"   # median | mean | trimmed_mean
+      trim_pct: 0.10
+      shuffle: false
+
+  realistic:
+    metric: "sharpe"        # sharpe | cagr | calmar
+    cv:
+      enabled: true
+      scheme: "blocked"     # blocked | cpcv
+      n_blocks: 5
+      k_test_blocks: 3
+      purge: 30
+      embargo: 0.02
+      max_folds: 32
+      aggregate: "median"   # median | mean | trimmed_mean
+      trim_pct: 0.10
+      shuffle: false
+
+  # Constraint enforced: 0 < exit_z < entry_z and stop_z > entry_z
+  entry_z_range: [1.0, 2.5]
+  exit_z_range: [0.3, 0.9]
+  stop_z_range: [2.6, 3.5]
+  init_points: 16
+  n_iter: 24
+  patience: 0
+
+  # Optional stage 2 for the Markov overlay (used only when markov_filter.enabled=true).
+  # If omitted, BO falls back to markov_filter.min_revert_prob / horizon_days as point values.
+  min_revert_prob_range: [0.45, 0.75]
+  horizon_days_range: [5, 15]
+
+  # Optional dedicated stage-2 budget. Falls back to init_points / n_iter / patience when absent.
+  markov_init_points: 12
+  markov_n_iter: 16
+  markov_patience: 0

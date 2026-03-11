@@ -1,0 +1,65 @@
+monitoring:
+  enabled: true
+  heartbeat_sec: 60
+  prometheus:
+    enabled: false
+    port: 9108
+    namespace: "project"
+    keep_alive_sec: 20
+
+perf:
+  blas_threads: 1
+  numexpr_threads: 1
+
+data:
+  # For thesis/paper: prefer run-scoped processing artefacts (immutable).
+  prices_path: "runs/data/by_run/PRC-20260307T163004Z-d1f4e841/outputs/processed/filled_prices_exec.parquet"
+  price_field: "close"
+  prefer_panel_prices: true
+  panel_prices_path: "runs/data/by_run/PRC-20260307T163004Z-d1f4e841/outputs/processed/filled_prices_panel_exec.parquet"
+  panel_field: "close"
+  pairs_path: "runs/data/filtered_pairs.pkl"
+  timestamp_column: null
+  timestamp_unit: null
+
+data_analysis:
+  use_multiprocessing: true
+  n_jobs: 2
+  mp_start_method: spawn
+
+  # Analysis preserves the input index timezone and interprets naive values in that timezone.
+  # For processed daily inputs this is typically America/New_York.
+  # Legacy aliases train_start_utc / train_cutoff_utc are still accepted for backward compatibility.
+  train_start_local: "2020-03-01"
+  train_cutoff_local: "2022-03-01"
+
+  # PD safeguard for shrinkage covariance Sigma (paper: pd_tol / pd_floor)
+  pd_tol: 1.0e-12
+  pd_floor: 1.0e-8
+
+  # Persist run-scoped intermediate artifacts for auditability (dense returns, rolling series, bootstrap table, etc.).
+  persist_intermediates: true
+
+  rolling_window: 84
+  rolling_step: 21
+
+  pair_corr_threshold: 0.80
+
+  pct_thr1: 0.75
+  pct_thr2: 0.85
+  pair_pct_threshold1: 0.60
+  pair_pct_threshold2: 0.30
+
+  fdr_alpha: 0.05
+  fdr_method: "BY"
+  enable_bootstrap: true
+  enable_hypothesis_test: true
+  enable_fdr: true
+  max_candidates: 1000
+  disable_max_candidates: true
+
+  bootstrap:
+    n_resamples: 2000
+    null_mean_corr: 0.70
+    block_size: 4
+    ci_level: 0.95

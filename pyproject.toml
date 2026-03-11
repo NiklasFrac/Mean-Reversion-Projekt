@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "pythonprojekt-universe"
 version = "0.1.0"
-description = "Universe, processing, and analysis pipelines for reproducible quantitative research."
+description = "Universe, processing, analysis, and backtest pipelines for reproducible quantitative research."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
@@ -25,6 +25,12 @@ analysis = [
   "scikit-learn>=1.5",
   "scipy>=1.13",
   "threadpoolctl>=3.5",
+]
+backtest = [
+  "bayesian-optimization>=1.4",
+  "matplotlib>=3.9",
+  "scipy>=1.13",
+  "statsmodels>=0.14",
 ]
 processing = [
   "mlflow>=2.17",
@@ -50,7 +56,7 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["analysis*", "processing*", "universe*"]
+include = ["analysis*", "backtest*", "processing*", "universe*"]
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

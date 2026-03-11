@@ -1,12 +1,12 @@
 # PythonProjekt
 
 This repository contains a reproducible quantitative research pipeline with
-three operational stages and one downstream consumer:
+four operational stages:
 
 - `universe`: builds the investable universe and upstream artefacts with provenance
 - `processing`: turns upstream artefacts into execution-ready panels, diagnostics, and ADV outputs
 - `analysis`: runs pair-selection research, rolling metrics, and bootstrap/FDR evaluation
-- `backtest`: consumes analysis outputs downstream and is documented separately from the core runbook
+- `backtest`: evaluates strategy behavior, execution assumptions, and walk-forward performance from analysis outputs
 
 ## Prerequisites
 
@@ -23,6 +23,7 @@ three operational stages and one downstream consumer:
 - `src/tests/universe/` - universe test suite
 - `src/tests/processing/` - processing test suite
 - `src/tests/analysis/` - analysis test suite
+- `src/tests/backtest/` - backtest test suite
 - `runs/configs/` - runtime configurations
 - `runs/data/` - generated mutable "latest" outputs and run-scoped artefacts
 
@@ -31,6 +32,7 @@ three operational stages and one downstream consumer:
 - `universe` writes raw prices, raw volume, manifests, and optional immutable per-run outputs under `runs/data/by_run/...`
 - `processing` consumes universe artefacts and emits processed execution outputs, diagnostics, and ADV artefacts
 - `analysis` consumes processed outputs and writes pair candidates, rolling diagnostics, bootstrap/FDR statistics, and provenance metadata
+- `backtest` consumes processed prices plus analysis outputs and writes run-scoped reports under `runs/results/performance/BT-*` and BO diagnostics under `runs/results/bo/*` when enabled
 - For audit, paper, or reproducibility work, prefer immutable run-scoped artefacts under `runs/data/by_run/...` when available
 
 ## Installation
@@ -47,21 +49,27 @@ Analysis runtime dependencies:
 uv sync --extra analysis
 ```
 
+Backtest runtime dependencies:
+
+```bash
+uv sync --extra backtest
+```
+
 Optional processing features (for example calendars and MLflow):
 
 ```bash
 uv sync --extra processing
 ```
 
-Full local environment for the core research stack:
+Full local environment for the full four-stage research stack:
 
 ```bash
-uv sync --extra analysis --extra processing
+uv sync --extra analysis --extra backtest --extra processing
 ```
 
 ## Run Pipelines
 
-Recommended order: `universe -> processing -> analysis`.
+Recommended order: `universe -> processing -> analysis -> backtest`.
 The default entry-point configs live under `runs/configs/`.
 
 Universe:
@@ -80,6 +88,12 @@ Analysis:
 
 ```bash
 uv run --extra analysis python -m analysis.runner_analysis --cfg runs/configs/config_analysis.yaml
+```
+
+Backtest:
+
+```bash
+uv run --extra backtest python -m backtest.runner_backtest --cfg runs/configs/config_backtest.yaml
 ```
 
 ## Quality Gates (Local)
@@ -114,6 +128,15 @@ uv run --extra analysis mypy --config-file mypy_analysis.ini
 uv run --extra analysis pytest -q src/tests/analysis
 ```
 
+Backtest:
+
+```bash
+uv run ruff check src/backtest src/tests/backtest
+uv run ruff format --check src/backtest src/tests/backtest
+uv run --extra backtest mypy --config-file mypy_backtest.ini
+uv run --extra backtest pytest -q src/tests/backtest
+```
+
 Pre-commit / pre-push:
 
 ```bash
@@ -126,6 +149,16 @@ uv run pre-commit run --all-files --hook-stage pre-push
 - `universe-ci`: Ruff, format check, Mypy, and Universe tests
 - `processing-ci`: `core` / `optional` matrix, optional-processing import coverage, Ruff, Mypy, and Processing tests
 - `analysis-ci`: frozen `uv` install with `analysis` extra, dependency import smoke check, Ruff, Mypy, and Analysis tests
+- `backtest-ci`: frozen `uv` install with `backtest` extra, dependency import smoke check, Ruff, Mypy, and Backtest tests
+
+## Reproducibility Files
+
+- `pyproject.toml`: Python version, package discovery, extras, and repo-wide `pytest`/`ruff`/`uv` defaults.
+- `uv.lock`: frozen dependency set for deterministic local and CI installs via `uv sync --frozen`.
+- `.pre-commit-config.yaml`: local `ruff`/`mypy`/`pytest` hooks for all four stages.
+- `mypy_*.ini`: stage-specific type-check profiles used locally and in CI.
+- `runs/configs/*.yaml`: canonical stage entry-point configs, including `runs/configs/config_backtest.yaml`.
+- `.github/workflows/*.yml`: CI source of truth mirroring the local quality gates.
 
 ## Further Documentation
 

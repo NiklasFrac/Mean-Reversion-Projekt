@@ -1610,6 +1610,12 @@ analysis = [
     { name = "scipy" },
     { name = "threadpoolctl" },
 ]
+backtest = [
+    { name = "bayesian-optimization" },
+    { name = "matplotlib" },
+    { name = "scipy" },
+    { name = "statsmodels" },
+]
 processing = [
     { name = "mlflow" },
     { name = "pandas-market-calendars" },
@@ -1631,7 +1637,9 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "bayesian-optimization", marker = "extra == 'backtest'", specifier = ">=1.4" },
     { name = "joblib", specifier = ">=1.4" },
+    { name = "matplotlib", marker = "extra == 'backtest'", specifier = ">=3.9" },
     { name = "mlflow", marker = "extra == 'processing'", specifier = ">=2.17" },
     { name = "numexpr", marker = "extra == 'analysis'", specifier = ">=2.10" },
     { name = "numpy", specifier = ">=2.0,<3.0" },
@@ -1642,11 +1650,13 @@ requires-dist = [
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "scikit-learn", marker = "extra == 'analysis'", specifier = ">=1.5" },
     { name = "scipy", marker = "extra == 'analysis'", specifier = ">=1.13" },
+    { name = "scipy", marker = "extra == 'backtest'", specifier = ">=1.13" },
+    { name = "statsmodels", marker = "extra == 'backtest'", specifier = ">=0.14" },
     { name = "threadpoolctl", marker = "extra == 'analysis'", specifier = ">=3.5" },
     { name = "tqdm", specifier = ">=4.67" },
     { name = "yfinance", specifier = ">=0.2.54" },
 ]
-provides-extras = ["analysis", "processing"]
+provides-extras = ["analysis", "backtest", "processing"]
 
 [package.metadata.requires-dev]
 dev = [

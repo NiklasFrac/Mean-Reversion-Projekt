@@ -1,0 +1,49 @@
+{
+  "cfg_path": null,
+  "cfg_hash": "e7e33edf4cf4382d268059ebc9adbdd6f7bc784fbab43b22afa1c3ef6f4bcfc6",
+  "stats": {
+    "n_tickers": 3,
+    "n_initial_pairs": 1,
+    "n_candidates": 1,
+    "n_selected": 1,
+    "runtime_seconds": 0.13572335243225098,
+    "seed": 7
+  },
+  "thresholds": {
+    "corr": 0.7,
+    "pct_thr_cut": 60.0,
+    "pct_thr1": 0.6,
+    "pct_thr2": 0.7,
+    "mean_min": 0.6,
+    "null_mean": 0.6,
+    "fdr_alpha": 0.1
+  },
+  "rolling": {
+    "window": 60,
+    "step": 10
+  },
+  "bootstrap": {
+    "n_resamples": 60,
+    "seed": 7,
+    "block_size": 10
+  },
+  "inputs": [
+    {
+      "prices_path": "C:\\Users\\nikla\\AppData\\Local\\Temp\\pytest-of-nikla\\pytest-43\\test_golden_outputs0\\filled.pkl",
+      "sha256": "180dd717ac7f5c2a4ccee2872de976192189afa13fd67c53fda6dfe627d963f6",
+      "rows": 180,
+      "cols": 3
+    }
+  ],
+  "metrics": {
+    "n_windows": 12,
+    "dropped_rows_after_returns": 0,
+    "dropped_cols_after_cleaning": 0
+  },
+  "env": {
+    "numpy": "2.3.2",
+    "pandas": "2.3.2",
+    "sklearn": "1.7.1",
+    "scipy": "1.16.1"
+  }
+}

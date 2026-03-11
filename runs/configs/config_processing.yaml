@@ -1,0 +1,156 @@
+data:
+  dir: runs/data
+  out_dir: runs/data/processed
+
+  # Controls where processing reads raw inputs from.
+  # - run_latest: newest immutable Universe run
+  # - run_pinned: exactly pinned_universe_outputs_dir (paper/thesis mode)
+  # - legacy_latest: mutable runs/data fallback for experiments
+  input_mode: run_pinned
+
+  # Only used when input_mode: run_pinned
+  pinned_universe_outputs_dir: runs/data/by_run/RUN-20260303T071456Z-48D430-723C11_48d4307c/outputs
+
+  # Strict mode: do not silently fall back, and enforce symbol contract on run_* modes.
+  strict_inputs: true
+  allow_fallback_to_legacy: false
+
+  filled_prices_exec_path: runs/data/processed/filled_prices_exec.parquet
+  filled_prices_panel_exec_path: runs/data/processed/filled_prices_panel_exec.parquet
+  removed_symbols_path: runs/data/processed/filled_removed.pkl
+  diagnostics_path: runs/data/processed/filled.diag.json
+  manifest_path: runs/data/processed/filled_manifest.json
+  adv_out_path: runs/data/processed/adv_map.pkl
+
+  raw_prices_globs:
+    - runs/data/by_run/RUN-*/outputs/raw_prices.pkl
+    - runs/data/raw_prices.pkl
+    - runs/data/raw_prices.[0-9a-f]*.pkl
+    - runs/data/raw_prices.parquet
+  raw_volume_globs:
+    - runs/data/by_run/RUN-*/outputs/raw_volume_unadj.pkl
+    - runs/data/by_run/RUN-*/outputs/raw_volume.pkl
+    - runs/data/raw_volume_unadj.pkl
+    - runs/data/raw_volume.pkl
+    - runs/data/raw_volume.[0-9a-f]*.pkl
+    - runs/data/raw_volume.parquet
+
+data_processing:
+  logging_level: "INFO"
+
+  calendars:
+    default: "XNYS"
+    # Toggle per-symbol calendar CSV loading.
+    symbol_calendar_csv_enabled: false
+    symbol_calendar_csv: runs/metadata/symbol_calendar.csv
+
+  vendor_tz: "UTC"
+  vendor_tz_policy: "config_wins"
+
+  rth_only: true
+  grid_mode: "calendar"
+
+  quality_flags:
+    enabled: false
+    path: runs/data/quality_flags.parquet
+    invert_meaning: false
+    format: "auto"
+    ts_col: "ts"
+    symbol_col: "symbol"
+    flag_col: "flag"
+
+  outliers:
+    enabled: false
+    zscore: 12.0
+    window: 63
+    use_log_returns: true
+
+  return_caps:
+    enabled: false
+    lower: -0.9
+    upper: 3.0
+    mode: "clip"
+
+  staleness:
+    enabled: false
+    k: 3
+    min_run: 2
+    eps: 1.0e-8
+    use_volume: false
+    volume_threshold: 0.0
+
+  filling:
+    causal_only: true
+    hard_drop: true
+
+  # Vendor guards now only mask manually curated bad rows.
+  vendor_guards:
+    enabled: true
+    bad_rows:
+      enabled: false
+      path: "runs/data/vendor_bad_rows.parquet"
+      action: "mask_nan"
+
+  stage1:
+    ohlc_mask:
+      enabled: true
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-4
+      mask_nonpositive: true
+    zero_volume_with_price:
+      enabled: true
+      min_price_for_zero_volume_rule: 0.0
+
+  stage2:
+    keep_pct_threshold: 0.80
+    max_start_na: 3
+    max_end_na: 3
+    max_gap_bars: 3
+    hard_drop: true
+    min_tradable_rows_for_ohl_gate: 0
+    ohl_missing_pct_max: 0.25
+
+  reverse_split_v2:
+    enabled: true
+    # Keep aligned with stage2.max_gap_bars unless explicitly overridden.
+    max_split_jump_gap: 3
+    jump_threshold: 0.90
+    level_window: 63
+    level_mad_k: 6.0
+    post_persist_bars: 5
+    factor_tolerance: 0.20
+    weights:
+      jump: 0.35
+      level: 0.25
+      persistence: 0.25
+      factor: 0.15
+    score_flag_threshold: 0.75
+    score_drop_threshold: 0.75
+    drop_on_flag_threshold: true
+
+  panel_reconcile:
+      eps_abs: 1.0e-6
+      eps_rel: 1.0e-4
+
+  adv_mode: "dollar"
+  adv_stat: "mean"
+  adv_price_source: "raw_unadjusted"
+  adv_window: 21
+  adv_gates:
+    min_valid_ratio: 0.80
+    min_total_windows_for_adv_gate: 0
+    max_invalid_window_ratio: 0.25
+
+  event_log:
+    enabled: true
+    path: "runs/data/processed/processing_events.parquet"
+
+  parquet_compression: "zstd"
+  n_jobs: 1
+  pip_freeze: false
+
+mlflow:
+  enabled: false
+  tracking_uri: sqlite:///runs/metadata/mlflow.db
+  experiment_name:
+  run_name: processing_run

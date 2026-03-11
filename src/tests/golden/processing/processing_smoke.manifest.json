@@ -1,0 +1,19 @@
+{
+  "cfg_path": "config.yaml",
+  "inputs": {
+    "raw_prices": {
+      "path": "in-memory",
+      "sha1": null
+    },
+    "raw_volume": {
+      "path": null,
+      "sha1": null
+    }
+  },
+  "extra": {
+    "metrics": {
+      "kept": 2,
+      "removed": 0
+    }
+  }
+}

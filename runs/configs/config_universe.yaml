@@ -1,0 +1,122 @@
+# ------------------------
+# logging
+# ------------------------
+logging:
+  level: "INFO"
+  file:
+    enabled: true
+    path: "runs/logs/universe.log"
+    rotate_mb: 50
+    retention: 10
+  json:
+    enabled: false
+    path: "runs/logs/universe.jsonl"
+
+# ------------------------
+# monitoring
+# ------------------------
+monitoring:
+  prometheus:
+    enabled: true
+    port: 9108
+
+# ------------------------
+# runtime
+# ------------------------
+runtime:
+  workers: 2
+  max_inflight_requests: 2
+  progress_bar: true
+  fundamentals_heartbeat_logging: true  # set true to emit periodic "Fundamentals warten auf Antworten" heartbeats
+  request_timeout: 20
+  request_retries: 4
+  request_backoff: 2.8
+  fundamentals_postfill_mode: "drop"  # drop unresolved fundamentals rows instead of extra fill calls
+  checkpoint_path: "runs/data/universe_checkpoint.json"
+  # Write immutable per-run copies under runs/data/by_run/<run_id>_<cfg_hash8>/ (prevents confusion from runs/data being overwritten).
+  persist_run_scoped_outputs: true
+  run_scoped_outputs_dir: "runs/data/by_run"
+  force_rebuild: false
+  fail_fast:
+    enabled: true
+    max_consecutive_failures: 10000
+  canary:
+    min_valid_tickers: 10
+    max_nan_pct: 0.10
+
+# ------------------------
+# universe
+# ------------------------
+universe:
+  output_tickers_csv: "runs/data/tickers_universe.csv"
+  output_tickers_ext_csv: "runs/data/tickers_universe_ext.csv"
+  manifest: "runs/data/universe_manifest.json"
+  fundamentals_out: "runs/data/fundamentals_universe.parquet"
+  adv_cache: "runs/data/ticker_adv.pkl"
+  screener_glob: "runs/data/nasdaq_screener_*.csv"
+  screener_selection_mode: "error_if_ambiguous"
+
+# ------------------------
+# filters
+# ------------------------
+filters:
+  min_price: 5.0
+  max_price: null
+  min_market_cap: null
+  max_market_cap: null
+  min_avg_volume: null
+  max_avg_volume: null
+  min_float_pct: null
+  min_free_float_shares: null
+  min_free_float_dollar_cap: null
+  require_dividend: false
+  symbol_whitelist: []
+  symbol_blacklist: []
+  drop_prefixes: ["$", "^", "TEST"]
+  drop_suffixes: ["-U", "-WS", "-W", "-WT", "-RIGHT", "-R"]
+  drop_regex: ["^\\$"]
+  drop_contains: ["^"]
+  drop_na: false
+  drop_zero: false
+  min_dollar_adv: 1000000
+
+# ------------------------
+# data
+# ------------------------
+data:
+  adv_path: "runs/data/adv_map_usd.csv"
+  raw_prices_cache: "runs/data/raw_prices.pkl"
+  volume_path: "runs/data/raw_volume.pkl"
+  download_start_date: "2020-03-01"  # inclusive start date (UTC)
+  download_end_date: "2026-03-01"
+  download_interval: "1d"
+  download_batch: 10
+  adjust_dividends: true        # controls yfinance auto_adjust; set false to fetch unadjusted closes only
+  strict_unadjusted_validation: false  # true => fail if adjusted/unadjusted closes are identical for all compared symbols
+  download_pause: 1.0
+  download_retries: 3
+  backoff_factor: 2.0
+  allow_incomplete_history: false
+  adv_window: 30  # window in trading days for historical dollar ADV (median price*volume) and price median
+  # Per-ticker warmup availability requirement for ADV/price warmup metrics:
+  # required valid days = ceil(adv_window * adv_min_valid_ratio).
+  # Default behavior remains 0.70 (with adv_window=30 => at least 21 jointly valid warmup days).
+  # This drives symbol-level warmup metric availability and therefore universe filtering.
+  adv_min_valid_ratio: 0.70
+  # Cache-only quality gate (cross-sectional coverage of cached ADV rows vs expected ticker count).
+  # This does NOT control per-ticker warmup availability filtering.
+  adv_cache_min_coverage_ratio: 0.80
+  group_download: false
+  download_threads: 1     # single-threaded to reduce vendor rate limits for ADV/raw panels
+  # Fundamentals cache: keep enabled for speed but refresh regularly to avoid stale/NaN-heavy snapshots.
+  fundamentals_cache_enabled: true
+  fundamentals_cache_ttl_days: 30.0
+
+# ------------------------
+# vendor
+# ------------------------
+vendor:
+  rate_limit_per_sec: 0.8
+  base_backoff: 1.2
+  backoff_factor: 2.5
+  max_retries: 6
