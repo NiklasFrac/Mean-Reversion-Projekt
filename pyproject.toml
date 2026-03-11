@@ -1,0 +1,67 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pythonprojekt-universe"
+version = "0.1.0"
+description = "Universe, processing, and analysis pipelines for reproducible quantitative research."
+readme = "README.md"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+  "joblib>=1.4",
+  "numpy>=2.0,<3.0",
+  "pandas>=2.2,<3.0",
+  "pyarrow>=15.0",
+  "prometheus-client>=0.22",
+  "pyyaml>=6.0",
+  "tqdm>=4.67",
+  "yfinance>=0.2.54",
+]
+
+[project.optional-dependencies]
+analysis = [
+  "numexpr>=2.10",
+  "scikit-learn>=1.5",
+  "scipy>=1.13",
+  "threadpoolctl>=3.5",
+]
+processing = [
+  "mlflow>=2.17",
+  "pandas-market-calendars>=4.4",
+]
+
+[dependency-groups]
+dev = [
+  "bayesian-optimization>=1.4",
+  "hypothesis>=6.130",
+  "mypy>=1.15",
+  "pre-commit>=4.0",
+  "pytest>=8.3",
+  "pytest-cov>=5.0",
+  "ruff>=0.9",
+  "scikit-learn>=1.5",
+  "statsmodels>=0.14",
+  "types-pyyaml>=6.0.12",
+]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["analysis*", "processing*", "universe*"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+markers = [
+  "unit: fast, isolated test coverage",
+  "integration: multi-component or end-to-end coverage",
+]
+
+[tool.ruff]
+target-version = "py312"
+src = ["src"]
+
+[tool.uv]
+default-groups = ["dev"]
