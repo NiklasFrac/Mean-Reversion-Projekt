@@ -1,0 +1,42 @@
+name: analysis-ci
+on:
+  push:
+  pull_request:
+
+jobs:
+  analysis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PIP_ONLY_BINARY: ":all:"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install deps
+        run: uv sync --frozen --extra analysis
+
+      - name: Verify analysis imports
+        run: uv run --extra analysis python -c "import scipy, sklearn, threadpoolctl; print('analysis imports OK')"
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/analysis src/tests/analysis
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check src/analysis src/tests/analysis
+
+      - name: Type check (mypy)
+        run: uv run --extra analysis mypy --config-file mypy_analysis.ini
+
+      - name: Tests
+        run: uv run --extra analysis pytest -q src/tests/analysis

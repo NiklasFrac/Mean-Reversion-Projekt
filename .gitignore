@@ -2,6 +2,9 @@
 **/.*
 !/.gitignore
 !/.gitattributes
+!/.github/
+!/.github/workflows/
+!/.github/workflows/*.yml
 
 __pycache__/
 *.py[cod]

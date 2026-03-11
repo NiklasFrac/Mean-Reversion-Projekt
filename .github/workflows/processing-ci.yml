@@ -1,0 +1,53 @@
+name: processing-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  processing:
+    name: processing (${{ matrix.profile }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        profile: [core, optional]
+    env:
+      PIP_ONLY_BINARY: ":all:"
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install deps
+        run: uv sync --frozen
+
+      - name: Install optional processing extras
+        if: matrix.profile == 'optional'
+        run: uv sync --frozen --extra processing
+
+      - name: Verify optional imports
+        if: matrix.profile == 'optional'
+        run: uv run python -c "import mlflow, pandas_market_calendars; print('optional imports OK')"
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/processing src/tests/processing
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check src/processing src/tests/processing
+
+      - name: Type-check (mypy)
+        run: uv run mypy --config-file mypy_processing.ini
+
+      - name: Tests
+        run: uv run pytest -q src/tests/processing

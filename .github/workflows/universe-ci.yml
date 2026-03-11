@@ -1,0 +1,42 @@
+name: universe-ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  universe:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      PIP_ONLY_BINARY: ":all:"        # keine Source-Builds
+      NPY_DISABLE_LONGDOUBLE: "1"     # NumPy 3.13 Stabilitaet
+      OPENBLAS_NUM_THREADS: "1"
+      OMP_NUM_THREADS: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Install deps
+        run: uv sync --frozen
+
+      - name: Lint (ruff)
+        run: uv run ruff check src/universe src/tests/universe
+
+      - name: Format check (ruff)
+        run: uv run ruff format --check src/universe src/tests/universe
+
+      - name: Type check (mypy)
+        run: uv run mypy --config-file mypy_universe.ini
+
+      - name: Tests (universe)
+        run: uv run pytest -q src/tests/universe
+
