@@ -1,0 +1,25 @@
+{
+  "pre_quality": {
+    "checks": {
+      "rows": 10,
+      "cols": 2
+    }
+  },
+  "post_quality": {
+    "checks": {
+      "rows": 10,
+      "cols": 2
+    }
+  },
+  "removed_count": 0,
+  "kept_count": 2,
+  "processing_agg": {
+    "kept": 2,
+    "removed": 0,
+    "grid_mode": "leader",
+    "calendar": "XNYS",
+    "mean_non_na_pct": 0.9,
+    "max_longest_gap_kept": 2,
+    "sum_outliers_flagged": 0
+  }
+}
