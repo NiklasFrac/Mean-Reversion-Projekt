@@ -46,6 +46,12 @@ Universe -> Processing -> Analysis -> Backtest
 - `src/tests/` - stage-specific test suites
 - `runs/configs/` - canonical runtime configurations
 
+## License
+
+The code in this repository is licensed under the MIT License. Data files and
+other third-party artefacts may be subject to separate upstream terms and are
+not covered by the MIT License unless explicitly stated.
+
 ## Prerequisites
 
 - Python `3.12` (`>=3.12,<3.14`)
