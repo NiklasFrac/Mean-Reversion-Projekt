@@ -281,10 +281,9 @@ def _apply_cost_semantics(df: pd.DataFrame) -> pd.DataFrame:
     )
     slip_realized = out["slippage_cost"].where(~diag_only, 0.0)
     impact_realized = out["impact_cost"].where(~diag_only, 0.0)
-    out["execution_diagnostic_costs"] = (
-        out["slippage_cost"].where(diag_only, 0.0)
-        + out["impact_cost"].where(diag_only, 0.0)
-    )
+    out["execution_diagnostic_costs"] = out["slippage_cost"].where(
+        diag_only, 0.0
+    ) + out["impact_cost"].where(diag_only, 0.0)
     out["total_costs"] = (
         out["fees"]
         + slip_realized

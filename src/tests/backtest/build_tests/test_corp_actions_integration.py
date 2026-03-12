@@ -55,9 +55,7 @@ def test_rewrite_if_wrong_columns(tmp_path: Path):
     ca.write_text("badcol1,badcol2\nA,B\n", encoding="utf-8")
     ensured = ensure_corporate_actions_file(ca)
     head = ensured.read_text(encoding="utf-8").splitlines()[0].strip()
-    assert head == "symbol,date,type,factor,amount,notes", (
-        "Header was not corrected"
-    )
+    assert head == "symbol,date,type,factor,amount,notes", "Header was not corrected"
 
 
 def test_loader_with_empty_actions_no_crash(tmp_path: Path):

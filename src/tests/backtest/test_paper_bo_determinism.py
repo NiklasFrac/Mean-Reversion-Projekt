@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pandas as pd
@@ -371,7 +372,11 @@ def test_run_paper_bo_realistic_runs_markov_stage2(
     assert seen[1][1]["theta_markov_hat"] == res["theta_markov_hat"]
 
 
-def test_run_paper_bo_fast_rejects_markov_stage2(tmp_path: Path) -> None:
+def test_run_paper_bo_fast_runs_markov_stage2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backtest.optimize.paper_bo_parts import pipeline as pipeline_mod
+
     idx = pd.bdate_range("2024-01-02", periods=8)
     prices = pd.DataFrame({"AAA": range(8), "BBB": range(1, 9)}, index=idx, dtype=float)
     cfg = {
@@ -381,21 +386,185 @@ def test_run_paper_bo_fast_rejects_markov_stage2(tmp_path: Path) -> None:
                 "test": {"start": str(idx[-1]), "end": str(idx[-1])},
             }
         },
+        "pair_prefilter": {"prefilter_active": False},
+        "signal": {
+            "entry_z": 2.0,
+            "exit_z": 0.5,
+            "stop_z": 3.0,
+            "max_hold_days": 10,
+            "cooldown_days": 0,
+        },
         "markov_filter": {"enabled": True, "min_revert_prob": 0.55, "horizon_days": 10},
+        "spread_zscore": {"z_window": 5},
         "bo": {
             "mode": "fast",
             "entry_z_range": [2.0, 2.0],
             "exit_z_range": [0.5, 0.5],
             "stop_z_range": [3.0, 3.0],
+            "min_revert_prob_range": [0.65, 0.65],
+            "horizon_days_range": [7.6, 7.6],
         },
     }
+    seen: list[dict[str, Any]] = []
 
-    with pytest.raises(ValueError, match="Markov BO requires bo.mode='realistic'"):
-        paper_bo.run_paper_bo_conservative(
-            prices=prices,
-            prices_panel=None,
-            pairs={"AAA-BBB": {"t1": "AAA", "t2": "BBB"}},
-            pairs_data=None,
-            cfg=cfg,
-            out_dir=tmp_path,
+    def fake_fast_score(**kwargs: Any) -> float:
+        seen.append(
+            {
+                "component": str(kwargs["component"]),
+                "entry_z": float(kwargs["entry_z"]),
+                "exit_z": float(kwargs["exit_z"]),
+                "stop_z": float(kwargs["stop_z"]),
+                "markov_overrides": kwargs.get("markov_overrides"),
+            }
         )
+        return 1.25 if kwargs["component"] == "theta_sig" else 2.5
+
+    monkeypatch.setattr(pipeline_mod, "_score_fast_candidate", fake_fast_score)
+
+    res = paper_bo.run_paper_bo_conservative(
+        prices=prices,
+        prices_panel=None,
+        pairs={"AAA-BBB": {"t1": "AAA", "t2": "BBB"}},
+        pairs_data=None,
+        cfg=cfg,
+        out_dir=tmp_path,
+    )
+
+    assert res["meta"]["mode"] == "fast"
+    assert res["theta_sig_hat"] == {"entry_z": 2.0, "exit_z": 0.5, "stop_z": 3.0}
+    assert res["theta_markov_hat"] == {"min_revert_prob": 0.65, "horizon_days": 8}
+    assert res["theta_sig_score"] == pytest.approx(1.25)
+    assert res["theta_markov_score"] == pytest.approx(2.5)
+    assert res["score"] == pytest.approx(2.5)
+    assert res["meta"]["selected_component"] == "theta_markov"
+    assert seen[0]["component"] == "theta_sig"
+    assert seen[0]["markov_overrides"] is None
+    assert seen[1]["component"] == "theta_markov"
+    assert isinstance(seen[1]["markov_overrides"], dict)
+    assert seen[1]["markov_overrides"]["min_revert_prob"] == pytest.approx(0.65)
+    assert seen[1]["markov_overrides"]["horizon_days"] == 8
+
+
+def test_fast_simulation_markov_gate_changes_pnl(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backtest.optimize.paper_bo_parts import sim as sim_mod
+
+    idx = pd.bdate_range("2024-01-02", periods=6)
+    spread = pd.Series([0.0, 1.0, 2.0, 3.0, 4.0, 5.0], index=idx, dtype=float)
+    y = pd.Series([10.0, 9.0, 8.0, 9.0, 10.0, 10.5], index=idx, dtype=float)
+    x = pd.Series(10.0, index=idx, dtype=float)
+    z_fake = pd.Series([0.0, -2.5, -1.5, 0.0, 0.0, 0.0], index=idx, dtype=float)
+
+    monkeypatch.setattr(
+        sim_mod, "_rolling_zscore", lambda *_args, **_kwargs: z_fake.copy()
+    )
+
+    def fake_markov_filter(*args: Any, **kwargs: Any) -> Any:
+        _ = args
+        z = kwargs["z"]
+        gate = pd.Series(False, index=z.index, dtype=bool, name="markov_entry_gate")
+        return SimpleNamespace(entry_gate=gate)
+
+    monkeypatch.setattr(sim_mod, "build_markov_entry_filter", fake_markov_filter)
+
+    per_pair_prices = {"AAA-BBB": {"y": y, "x": x, "z_window": 3, "max_hold_days": 10}}
+    spreads = {"AAA-BBB": spread}
+    cfg_disabled = {
+        "markov_filter": {"enabled": False},
+        "spread_zscore": {"z_min_periods": 1},
+    }
+    cfg_enabled = {
+        "markov_filter": {"enabled": True, "min_revert_prob": 0.99, "horizon_days": 3},
+        "spread_zscore": {"z_min_periods": 1},
+    }
+
+    pnl_disabled = sim_mod._simulate_stage_pnl(
+        spreads=spreads,
+        per_pair_prices=per_pair_prices,
+        z_window=3,
+        entry_z=2.0,
+        exit_z=0.5,
+        stop_z=3.0,
+        max_hold_days=10,
+        cooldown_days=0,
+        cfg=cfg_disabled,
+        calendar=idx,
+    )["AAA-BBB"]
+    pnl_enabled = sim_mod._simulate_stage_pnl(
+        spreads=spreads,
+        per_pair_prices=per_pair_prices,
+        z_window=3,
+        entry_z=2.0,
+        exit_z=0.5,
+        stop_z=3.0,
+        max_hold_days=10,
+        cooldown_days=0,
+        cfg=cfg_enabled,
+        calendar=idx,
+    )["AAA-BBB"]
+
+    assert float(pnl_disabled.abs().sum()) > 0.0
+    assert float(pnl_enabled.abs().sum()) == pytest.approx(0.0)
+
+
+def test_fast_refit_markov_uses_only_prior_train_history(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from backtest.optimize.paper_bo_parts import sim as sim_mod
+
+    idx = pd.bdate_range("2024-01-02", periods=10)
+    y = pd.Series(
+        [10.0, 10.2, 10.1, 9.8, 9.7, 9.9, 10.3, 10.5, 10.4, 10.6],
+        index=idx,
+        dtype=float,
+    )
+    x = pd.Series(
+        [10.0, 10.1, 10.0, 9.9, 9.8, 9.9, 10.0, 10.2, 10.3, 10.4],
+        index=idx,
+        dtype=float,
+    )
+    train_dates = idx[[0, 1, 2, 6, 7, 8]]
+    eval_dates = idx[[3, 4, 5]]
+    seen: list[dict[str, pd.DatetimeIndex]] = []
+
+    def fake_markov_filter(*args: Any, **kwargs: Any) -> Any:
+        _ = args
+        seen.append(
+            {
+                "train_index": pd.DatetimeIndex(kwargs["train_index"]),
+                "eval_index": pd.DatetimeIndex(kwargs["eval_index"]),
+            }
+        )
+        z = kwargs["z"]
+        gate = pd.Series(True, index=z.index, dtype=bool, name="markov_entry_gate")
+        return SimpleNamespace(entry_gate=gate)
+
+    monkeypatch.setattr(sim_mod, "build_markov_entry_filter", fake_markov_filter)
+
+    sim_mod._simulate_stage_pnl_refit(
+        per_pair_prices={
+            "AAA-BBB": {"y": y, "x": x, "z_window": 3, "max_hold_days": 10}
+        },
+        train_dates=train_dates,
+        z_window=3,
+        entry_z=2.0,
+        exit_z=0.5,
+        stop_z=3.0,
+        max_hold_days=10,
+        cooldown_days=0,
+        cfg={
+            "markov_filter": {
+                "enabled": True,
+                "min_revert_prob": 0.55,
+                "horizon_days": 3,
+            },
+            "spread_zscore": {"z_min_periods": 1},
+        },
+        calendar=idx,
+        eval_dates=eval_dates,
+    )
+
+    assert len(seen) == 1
+    assert seen[0]["train_index"].equals(pd.DatetimeIndex(idx[[0, 1, 2]]))
+    assert seen[0]["eval_index"].equals(pd.DatetimeIndex(eval_dates))

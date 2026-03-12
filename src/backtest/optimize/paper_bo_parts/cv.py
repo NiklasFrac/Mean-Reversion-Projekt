@@ -358,6 +358,7 @@ def _fold_score_with_refit(
     max_hold_days: int,
     cooldown_days: int,
     cfg: Mapping[str, Any],
+    markov_overrides: Mapping[str, Any] | None = None,
 ) -> float:
     if not cv.enabled:
         pnl_by_pair = _simulate_stage_pnl_refit(
@@ -371,6 +372,7 @@ def _fold_score_with_refit(
             cooldown_days=cooldown_days,
             cfg=cfg,
             calendar=calendar,
+            markov_overrides=markov_overrides,
         )
         pnl = _portfolio_pnl_equal_weight(pnl_by_pair, calendar)
         perf = compute_performance(pnl, float(initial_capital))
@@ -391,6 +393,7 @@ def _fold_score_with_refit(
             cooldown_days=cooldown_days,
             cfg=cfg,
             calendar=calendar,
+            markov_overrides=markov_overrides,
         )
         pnl = _portfolio_pnl_equal_weight(pnl_by_pair, calendar)
         perf = compute_performance(pnl, float(initial_capital))
@@ -419,6 +422,7 @@ def _fold_score_with_refit(
                 cfg=cfg,
                 calendar=calendar,
                 eval_dates=eval_dates,
+                markov_overrides=markov_overrides,
             )
             for k, s in pnl_seg.items():
                 if k in fold_pnl_by_pair:
@@ -447,6 +451,7 @@ def _fold_score_with_refit(
                     cfg=cfg,
                     calendar=calendar,
                     eval_dates=eval_dates,
+                    markov_overrides=markov_overrides,
                 )
                 for k, s in pnl_seg.items():
                     if k in pnl_train_by_pair:

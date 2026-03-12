@@ -182,7 +182,9 @@ def test_offline_end_to_end_runner_corp(tmp_path: Path):
     assert not ca.empty, "corp_actions.csv should contain events."
     tcounts = ca["type"].str.lower().value_counts()
     assert tcounts.get("split", 0) >= 1, "Expected >=1 split event (heuristic)."
-    assert tcounts.get("delist", 0) >= 1, "Expected >=1 delisting event (universe_meta)."
+    assert tcounts.get("delist", 0) >= 1, (
+        "Expected >=1 delisting event (universe_meta)."
+    )
 
 
 # ==============================================================================

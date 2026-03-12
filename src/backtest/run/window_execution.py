@@ -13,7 +13,10 @@ from backtest.utils.run.data import (
 )
 from backtest.utils.portfolio import _df_trades_to_orders_df
 from backtest.utils.run.strategy import _build_strategy, _validate_cfg_strict
-from backtest.utils.run.trades import _collect_portfolio_intents, _collect_portfolio_trades
+from backtest.utils.run.trades import (
+    _collect_portfolio_intents,
+    _collect_portfolio_trades,
+)
 from backtest.simulators.engine import backtest_portfolio_with_yaml_cfg
 
 
@@ -191,9 +194,11 @@ def execute_window_backtest(
         pass
 
     orders = prepared.orders
-    if (not isinstance(orders, pd.DataFrame) or orders.empty) and isinstance(
-        trades, pd.DataFrame
-    ) and not trades.empty:
+    if (
+        (not isinstance(orders, pd.DataFrame) or orders.empty)
+        and isinstance(trades, pd.DataFrame)
+        and not trades.empty
+    ):
         orders = _df_trades_to_orders_df(trades)
 
     return WindowExecutionArtifacts(

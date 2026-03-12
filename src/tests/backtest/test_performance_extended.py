@@ -118,8 +118,6 @@ def test_pnl_explain_keeps_diag_costs_out_of_total_costs() -> None:
 
     explained = performance.pnl_explain(trades)
 
-    assert float(explained.loc[0, "execution_diagnostic_costs"]) == pytest.approx(
-        -0.75
-    )
+    assert float(explained.loc[0, "execution_diagnostic_costs"]) == pytest.approx(-0.75)
     assert float(explained.loc[0, "total_costs"]) == pytest.approx(-1.6)
     assert float(explained.loc[0, "net_pnl"]) == pytest.approx(8.4)

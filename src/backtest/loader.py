@@ -794,6 +794,7 @@ def prepare_pairs_data(  # noqa: C901
             idx_prefilter = idx
     if idx_prefilter.empty and prefilter_range is not None:
         logger.warning("prepare_pairs_data: prefilter_range produced empty window.")
+        idx_prefilter = idx
     pf_cfg = dict(pair_prefilter_cfg or {})
     coint_alpha = float(pf_cfg.get("coint_alpha", 0.05))
     min_obs = max(2, int(pf_cfg.get("min_obs", 30)))

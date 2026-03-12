@@ -8,6 +8,7 @@ import pandas as pd
 
 from backtest.config.execution_costs import resolve_execution_cost_spec
 from backtest.simulators.performance import apply_costs, calculate_pair_daily_pnl
+from backtest.strat.markov_filter import build_markov_entry_filter
 from backtest.utils import strategy as _strat_helpers
 
 
@@ -86,6 +87,7 @@ def _positions_from_z(
     stop_z: float,
     max_hold_days: int,
     cooldown_days: int,
+    entry_gate: pd.Series | None = None,
 ) -> pd.Series:
     """
     Stateful position process s_t in {-1,0,+1}:
@@ -98,6 +100,11 @@ def _positions_from_z(
     out = pd.Series(0, index=idx, dtype="int8", name="pos")
     if z.empty:
         return out
+    gate = (
+        pd.Series(entry_gate, copy=False).reindex(idx)
+        if isinstance(entry_gate, pd.Series)
+        else None
+    )
 
     e = abs(float(entry_z))
     x = abs(float(exit_z))
@@ -121,11 +128,19 @@ def _positions_from_z(
             continue
 
         if pos == 0:
-            long_entry = (math.isfinite(zt) and zt <= -e and zt > -s) and (
-                not math.isfinite(prev) or prev > -e
+            gate_ok = True
+            if gate is not None:
+                gate_raw = gate.iat[i]
+                gate_ok = True if pd.isna(gate_raw) else bool(gate_raw)
+            long_entry = (
+                gate_ok
+                and (math.isfinite(zt) and zt <= -e and zt > -s)
+                and (not math.isfinite(prev) or prev > -e)
             )
-            short_entry = (math.isfinite(zt) and zt >= e and zt < s) and (
-                not math.isfinite(prev) or prev < e
+            short_entry = (
+                gate_ok
+                and (math.isfinite(zt) and zt >= e and zt < s)
+                and (not math.isfinite(prev) or prev < e)
             )
             if long_entry:
                 pos = 1
@@ -227,6 +242,49 @@ def _precompute_spreads(
     return out
 
 
+def _cfg_with_markov_overrides(
+    cfg: Mapping[str, Any], markov_overrides: Mapping[str, Any] | None
+) -> Mapping[str, Any]:
+    if not markov_overrides:
+        return cfg
+    out = dict(cfg)
+    markov = (
+        dict(out.get("markov_filter") or {})
+        if isinstance(out.get("markov_filter"), Mapping)
+        else {}
+    )
+    markov.update(dict(markov_overrides))
+    out["markov_filter"] = markov
+    return out
+
+
+def _build_fast_markov_entry_gate(
+    *,
+    cfg: Mapping[str, Any],
+    z: pd.Series,
+    train_index: pd.DatetimeIndex,
+    eval_index: pd.DatetimeIndex,
+    entry_z: float,
+    exit_z: float,
+) -> pd.Series | None:
+    raw = (
+        cfg.get("markov_filter", {})
+        if isinstance(cfg.get("markov_filter"), Mapping)
+        else {}
+    )
+    if not bool(raw.get("enabled", False)):
+        return None
+    out = build_markov_entry_filter(
+        cfg,
+        z=z,
+        train_index=pd.DatetimeIndex(train_index),
+        eval_index=pd.DatetimeIndex(eval_index),
+        entry_z=float(entry_z),
+        exit_z=float(exit_z),
+    )
+    return out.entry_gate.reindex(z.index)
+
+
 def _simulate_stage_pnl(
     *,
     spreads: Mapping[str, pd.Series],
@@ -239,8 +297,10 @@ def _simulate_stage_pnl(
     cooldown_days: int,
     cfg: Mapping[str, Any],
     calendar: pd.DatetimeIndex,
+    markov_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, pd.Series]:
     per_trade, fee_bps, per_share_fee, min_fee, max_fee = _extract_cost_cfg(cfg)
+    cfg_local = _cfg_with_markov_overrides(cfg, markov_overrides)
 
     out: dict[str, pd.Series] = {}
     for pair in sorted((spreads or {}).keys(), key=str):
@@ -272,6 +332,14 @@ def _simulate_stage_pnl(
         x_al = x_al.loc[valid]
 
         z = _rolling_zscore(spread_al, int(pair_z_window), min_periods=pair_z_minp)
+        entry_gate = _build_fast_markov_entry_gate(
+            cfg=cfg_local,
+            z=z,
+            train_index=pd.DatetimeIndex(z.index),
+            eval_index=pd.DatetimeIndex(z.index),
+            entry_z=float(entry_z),
+            exit_z=float(exit_z),
+        )
         pos = _positions_from_z(
             z,
             entry_z=float(entry_z),
@@ -279,6 +347,7 @@ def _simulate_stage_pnl(
             stop_z=float(stop_z),
             max_hold_days=int(pair_max_hold),
             cooldown_days=int(cooldown_days),
+            entry_gate=entry_gate,
         )
 
         pnl = calculate_pair_daily_pnl(pos, y_al, x_al).reindex(calendar).fillna(0.0)
@@ -328,8 +397,10 @@ def _simulate_stage_pnl_refit(
     cfg: Mapping[str, Any],
     calendar: pd.DatetimeIndex,
     eval_dates: pd.DatetimeIndex | None = None,
+    markov_overrides: Mapping[str, Any] | None = None,
 ) -> dict[str, pd.Series]:
     per_trade, fee_bps, per_share_fee, min_fee, max_fee = _extract_cost_cfg(cfg)
+    cfg_local = _cfg_with_markov_overrides(cfg, markov_overrides)
 
     out: dict[str, pd.Series] = {}
     for pair in sorted((per_pair_prices or {}).keys(), key=str):
@@ -371,12 +442,21 @@ def _simulate_stage_pnl_refit(
                 train_idx, eval_index=eval_idx
             )
             allowed_idx = history_idx.union(eval_idx).sort_values()
-            z_eval = _strat_helpers.rolling_zscore_on_allowed_dates(
+            z_allowed = _strat_helpers.rolling_zscore_on_allowed_dates(
                 spread,
                 allowed_index=allowed_idx,
                 window=int(pair_z_window),
                 min_periods=pair_z_minp,
-            ).reindex(eval_idx)
+            )
+            entry_gate = _build_fast_markov_entry_gate(
+                cfg=cfg_local,
+                z=z_allowed,
+                train_index=history_idx,
+                eval_index=eval_idx,
+                entry_z=float(entry_z),
+                exit_z=float(exit_z),
+            )
+            z_eval = z_allowed.reindex(eval_idx)
             z_eval = z_eval.dropna()
             if z_eval.empty:
                 continue
@@ -389,6 +469,11 @@ def _simulate_stage_pnl_refit(
                 stop_z=float(stop_z),
                 max_hold_days=int(pair_max_hold),
                 cooldown_days=int(cooldown_days),
+                entry_gate=(
+                    entry_gate.reindex(z_eval.index)
+                    if isinstance(entry_gate, pd.Series)
+                    else None
+                ),
             )
             pnl = (
                 calculate_pair_daily_pnl(pos, y_eval, x_eval)
@@ -428,6 +513,14 @@ def _simulate_stage_pnl_refit(
             continue
 
         z = _rolling_zscore(spread, int(pair_z_window), min_periods=pair_z_minp)
+        entry_gate = _build_fast_markov_entry_gate(
+            cfg=cfg_local,
+            z=z,
+            train_index=train_idx,
+            eval_index=pd.DatetimeIndex(z.index),
+            entry_z=float(entry_z),
+            exit_z=float(exit_z),
+        )
         pos = _positions_from_z(
             z,
             entry_z=float(entry_z),
@@ -435,6 +528,7 @@ def _simulate_stage_pnl_refit(
             stop_z=float(stop_z),
             max_hold_days=int(pair_max_hold),
             cooldown_days=int(cooldown_days),
+            entry_gate=entry_gate,
         )
 
         pnl = calculate_pair_daily_pnl(pos, y_al, x_al).reindex(calendar).fillna(0.0)

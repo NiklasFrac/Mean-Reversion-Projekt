@@ -9,11 +9,14 @@ import numpy as np
 import pandas as pd
 from statsmodels.api import OLS, add_constant
 
+from backtest.run.trade_builder import TradeBuilder as _TradeBuilder
 from backtest.strat.markov_filter import build_markov_entry_filter
 from backtest.utils import strategy as _helpers
-from backtest.run.trade_builder import TradeBuilder, _trades_to_orders
 
 logger = logging.getLogger("backtest.strat.baseline")
+
+# Keep module-level access stable for tests and downstream monkeypatching.
+TradeBuilder = _TradeBuilder
 
 
 def _get_tickers_from_meta(data: dict[str, Any]) -> tuple[str, str] | None:
@@ -272,10 +275,7 @@ def _entry_intents_from_z(
             and (not np.isfinite(prev) or prev > -e)
         )
         short_entry = (
-            gate_ok
-            and zval >= e
-            and zval < s
-            and (not np.isfinite(prev) or prev < e)
+            gate_ok and zval >= e and zval < s and (not np.isfinite(prev) or prev < e)
         )
         if long_entry or short_entry:
             rows.append(

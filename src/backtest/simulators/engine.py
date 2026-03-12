@@ -1001,12 +1001,7 @@ def _apply_execution_hooks(
                 df_out["exec_reject_reason"] = reasons.astype(str)
                 exec_rejected_count = int(derived_rej.sum())
                 try:
-                    vc = (
-                        reasons.loc[derived_rej]
-                        .fillna("")
-                        .astype(str)
-                        .value_counts()
-                    )
+                    vc = reasons.loc[derived_rej].fillna("").astype(str).value_counts()
                     exec_reject_reasons = {
                         str(k): int(v) for k, v in vc.to_dict().items() if str(k)
                     }

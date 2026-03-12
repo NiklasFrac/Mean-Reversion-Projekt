@@ -470,7 +470,7 @@ class LiquidityModel:
 
         o = price_at_or_prior(open_s, t)
         h = price_at_or_prior(high_s, t)
-        l = price_at_or_prior(low_s, t)
+        low_px = price_at_or_prior(low_s, t)
         c = price_at_or_prior(close_s, t)
         v = price_at_or_prior(vol_s, t, allow_zero=True)
         prev_c = self._asof_shift_value(close_s, t, shift=1)
@@ -482,12 +482,12 @@ class LiquidityModel:
         range_rel = 0.0
         if (
             h is not None
-            and l is not None
+            and low_px is not None
             and c is not None
             and np.isfinite(c)
             and float(c) > 0.0
         ):
-            range_rel = abs(float(h) - float(l)) / float(c)
+            range_rel = abs(float(h) - float(low_px)) / float(c)
 
         shift = int(max(0, self.cfg.asof_shift))
         sigma_val = self._asof_shift_value(sig_s, t, shift=shift)
@@ -518,10 +518,7 @@ class LiquidityModel:
         sigma_term = _clip(float(sigma_rel) / 2.0, 0.0, 3.0)
         volume_term = _clip(float(volume_rel) / 3.0, 0.0, 3.0)
         score = float(self.cfg.stress_intensity) * (
-            0.35 * gap_term
-            + 0.35 * range_term
-            + 0.20 * sigma_term
-            + 0.10 * volume_term
+            0.35 * gap_term + 0.35 * range_term + 0.20 * sigma_term + 0.10 * volume_term
         )
         regime = self._stress_regime(score)
         mods = self._stress_modifiers(regime)
@@ -622,9 +619,7 @@ class LiquidityModel:
         spread_ticks = int(
             max(
                 1,
-                round(
-                    float(spread_ticks) * float(stress.get("spread_mult", 1.0))
-                ),
+                round(float(spread_ticks) * float(stress.get("spread_mult", 1.0))),
             )
         )
         depth_top = int(
@@ -685,12 +680,8 @@ class LiquidityModel:
                 "_stress_range_bps": float(stress.get("range_bps", 0.0)),
                 "_stress_volume_rel": float(stress.get("volume_rel", 1.0)),
                 "_stress_sigma_rel": float(stress.get("sigma_rel", 1.0)),
-                "_stress_maker_touch_mult": float(
-                    stress.get("maker_touch_mult", 1.0)
-                ),
-                "_stress_fill_mean_mult": float(
-                    stress.get("fill_mean_mult", 1.0)
-                ),
+                "_stress_maker_touch_mult": float(stress.get("maker_touch_mult", 1.0)),
+                "_stress_fill_mean_mult": float(stress.get("fill_mean_mult", 1.0)),
                 "_stress_aggr_prob": float(stress.get("aggr_prob", 0.0)),
                 "_stress_aggr_max_frac": float(stress.get("aggr_max_frac", 0.0)),
             }

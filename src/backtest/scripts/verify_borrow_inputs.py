@@ -177,7 +177,8 @@ def check_per_asset(per_asset_obj: Any, prices: pd.DataFrame) -> bool:
     if missing:
         sample = sorted(list(missing))[:5]
         _status(
-            "WARN", f"{len(missing)} symbols are missing from the per-asset set (e.g. {sample} ...)"
+            "WARN",
+            f"{len(missing)} symbols are missing from the per-asset set (e.g. {sample} ...)",
         )
         ok = False
 
@@ -284,7 +285,8 @@ def check_rates(
         if miss_sym:
             sample = sorted(list(miss_sym))[:5]
             _status(
-                "WARN", f"borrow.rates is missing {len(miss_sym)} symbols (e.g. {sample} ...)"
+                "WARN",
+                f"borrow.rates is missing {len(miss_sym)} symbols (e.g. {sample} ...)",
             )
             ok = False
 

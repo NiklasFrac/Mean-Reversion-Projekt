@@ -129,9 +129,7 @@ def test_exec_one_leg_maker_not_touched_blocks() -> None:
 def test_exec_order_maker_partial_without_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ob = lob.OrderBook(
-        mid_price=100.0, levels=1, size_per_level=10, tick=0.01, seed=7
-    )
+    ob = lob.OrderBook(mid_price=100.0, levels=1, size_per_level=10, tick=0.01, seed=7)
     ts = pd.Timestamp("2024-01-02")
 
     monkeypatch.setattr(lob, "_maker_turnover_target", lambda *_args, **_kwargs: 4)
@@ -165,9 +163,7 @@ def test_exec_order_maker_partial_without_fallback(
 def test_exec_order_maker_partial_with_taker_fallback(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    ob = lob.OrderBook(
-        mid_price=100.0, levels=2, size_per_level=10, tick=0.01, seed=7
-    )
+    ob = lob.OrderBook(mid_price=100.0, levels=2, size_per_level=10, tick=0.01, seed=7)
     ts = pd.Timestamp("2024-01-02")
 
     monkeypatch.setattr(lob, "_maker_turnover_target", lambda *_args, **_kwargs: 2)

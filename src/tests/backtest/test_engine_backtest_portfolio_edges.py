@@ -101,15 +101,15 @@ def test_backtest_portfolio_baseline_intents_size_zero_has_no_ghost_episode() ->
             raw_yaml={
                 "backtest": {
                     "initial_capital": 100_000.0,
-                        "risk_per_trade": 0.0,
-                        "execution_lag_bars": 1,
-                        "splits": {
-                            "train": {
-                                "start": str((idx[0] - pd.Timedelta(days=1)).date()),
-                                "end": str((idx[0] - pd.Timedelta(days=1)).date()),
-                            },
-                            "test": {
-                                "start": str(idx[0].date()),
+                    "risk_per_trade": 0.0,
+                    "execution_lag_bars": 1,
+                    "splits": {
+                        "train": {
+                            "start": str((idx[0] - pd.Timedelta(days=1)).date()),
+                            "end": str((idx[0] - pd.Timedelta(days=1)).date()),
+                        },
+                        "test": {
+                            "start": str(idx[0].date()),
                             "end": str(idx[-1].date()),
                         },
                     },

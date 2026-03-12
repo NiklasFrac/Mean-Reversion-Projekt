@@ -64,9 +64,7 @@ def derive_exec_metrics(trades: pd.DataFrame) -> pd.DataFrame:
     slip = _to_float(cast(pd.Series, df.get("slippage_cost", 0.0)))
     imp = _to_float(cast(pd.Series, df.get("impact_cost", 0.0)))
     buyin = _to_float(cast(pd.Series, df.get("buyin_penalty_cost", 0.0)))
-    emergency = _to_float(
-        cast(pd.Series, df.get("exec_emergency_penalty_cost", 0.0))
-    )
+    emergency = _to_float(cast(pd.Series, df.get("exec_emergency_penalty_cost", 0.0)))
     diag_only = (
         pd.Series(df.get("exec_diag_costs_only", False), index=df.index)
         .fillna(False)

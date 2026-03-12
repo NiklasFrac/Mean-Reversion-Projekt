@@ -144,7 +144,11 @@ def _build_session_index(
     y_series: pd.Series | None,
     x_series: pd.Series | None,
 ) -> pd.DatetimeIndex:
-    if calendar is not None and isinstance(calendar, pd.DatetimeIndex) and len(calendar):
+    if (
+        calendar is not None
+        and isinstance(calendar, pd.DatetimeIndex)
+        and len(calendar)
+    ):
         idx = pd.DatetimeIndex(calendar).sort_values()
         return idx[~idx.duplicated()]
 
@@ -218,7 +222,9 @@ def _apply_book_state(
     ob.recenter(float(mid_price), preserve_spread=True)
     if not step_day:
         return
-    n_steps = int(max(1, params.get("steps_per_day", base_params.get("steps_per_day", 1))))
+    n_steps = int(
+        max(1, params.get("steps_per_day", base_params.get("steps_per_day", 1)))
+    )
     for _ in range(n_steps):
         top_bid = int(ob.bids[0].total_size) if ob.bids else 0
         top_ask = int(ob.asks[0].total_size) if ob.asks else 0
@@ -449,7 +455,9 @@ def _exec_order(
             top_depth = _same_side_top_depth(ob, side)
             if maker_max_top_frac > 0:
                 top = int(max(0, top_depth))
-                if top > 0 and qty > int(max(1, round(float(top) * maker_max_top_frac))):
+                if top > 0 and qty > int(
+                    max(1, round(float(top) * maker_max_top_frac))
+                ):
                     use_maker = False
         except Exception:
             pass
@@ -498,9 +506,7 @@ def _exec_order(
                     max_add=int(max(2, _safe_int(state.get("max_add", 0), 0))),
                     bias_top=float(state.get("bias_top", 0.7) or 0.7),
                     cancel_prob=float(state.get("cancel_prob", 0.0) or 0.0),
-                    max_cancel=int(
-                        max(1, _safe_int(state.get("max_cancel", 1), 1))
-                    ),
+                    max_cancel=int(max(1, _safe_int(state.get("max_cancel", 1), 1))),
                     aggr_prob=0.0,
                     aggr_max=0,
                 )
@@ -521,7 +527,10 @@ def _exec_order(
                 maker_max_top_frac=float(maker_max_top_frac),
                 steps_per_day=int(steps_per_day),
                 aggr_prob=float(
-                    max(0.0, min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0)))
+                    max(
+                        0.0,
+                        min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0)),
+                    )
                 ),
                 aggr_max_frac=float(
                     max(
@@ -624,7 +633,9 @@ def _exec_order(
                 "avg_price": float(avg_total) if avg_total is not None else None,
                 "vwap": float(avg_total) if avg_total is not None else None,
                 "signed_slippage": float(signed_slippage),
-                "slippage_ticks": float(signed_slippage / ob.tick) if ob.tick > 0 else 0.0,
+                "slippage_ticks": float(signed_slippage / ob.tick)
+                if ob.tick > 0
+                else 0.0,
                 "unfilled_size": int(max(0, qty - filled_total)),
                 "fills": fills_total,
                 "pre_best_bid": pre_bb,
@@ -933,13 +944,18 @@ def _leg_package_capacity_shares(
             ),
         )
     )
-    maker_top_frac = float(max(0.0, _safe_float(flow.get("maker_max_top_frac", 0.25), 0.25)))
-    aggr_prob = float(max(0.0, min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0))))
-    aggr_max_frac = float(max(0.0, _safe_float(state.get("_stress_aggr_max_frac", 0.0), 0.0)))
-    maker_turnover = (
-        float(top_depth) * maker_top_frac
-        + float(top_depth) * aggr_prob * aggr_max_frac * float(max(1, steps_per_day))
+    maker_top_frac = float(
+        max(0.0, _safe_float(flow.get("maker_max_top_frac", 0.25), 0.25))
     )
+    aggr_prob = float(
+        max(0.0, min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0)))
+    )
+    aggr_max_frac = float(
+        max(0.0, _safe_float(state.get("_stress_aggr_max_frac", 0.0), 0.0))
+    )
+    maker_turnover = float(top_depth) * maker_top_frac + float(
+        top_depth
+    ) * aggr_prob * aggr_max_frac * float(max(1, steps_per_day))
     maker_cap = maker_touch * maker_turnover * max(0.25, fill_cap)
 
     if mode == "maker":
@@ -979,8 +995,16 @@ def _pair_package_capacity(
         steps_per_day=steps_per_day,
         exit_capacity_mult=exit_capacity_mult,
     )
-    frac_y = float("inf") if int(y_qty_abs) <= 0 else float(cap_y) / float(max(1, int(y_qty_abs)))
-    frac_x = float("inf") if int(x_qty_abs) <= 0 else float(cap_x) / float(max(1, int(x_qty_abs)))
+    frac_y = (
+        float("inf")
+        if int(y_qty_abs) <= 0
+        else float(cap_y) / float(max(1, int(y_qty_abs)))
+    )
+    frac_x = (
+        float("inf")
+        if int(x_qty_abs) <= 0
+        else float(cap_x) / float(max(1, int(x_qty_abs)))
+    )
     pair_frac = float(min(frac_y, frac_x))
     if not np.isfinite(pair_frac):
         pair_frac = 1.0
@@ -1006,7 +1030,9 @@ def _emergency_penalty_cost(
     residual_frac = float(
         max(float(qty_y) / float(planned_y), float(qty_x) / float(planned_x))
     )
-    force_notional = float(abs(float(y_force_px)) * float(qty_y) + abs(float(x_force_px)) * float(qty_x))
+    force_notional = float(
+        abs(float(y_force_px)) * float(qty_y) + abs(float(x_force_px)) * float(qty_x)
+    )
     extra_bps = float(max(0.0, float(panic_cross_bps)) * residual_frac * 0.10)
     return float(-force_notional * extra_bps / 10_000.0)
 
@@ -1398,9 +1424,7 @@ def _simulate_trade_row(
     max_entry_delay_days = int(
         _safe_int(stress_model.get("max_entry_delay_days", 1), 1)
     )
-    max_exit_grace_days = int(
-        _safe_int(stress_model.get("max_exit_grace_days", 2), 2)
-    )
+    max_exit_grace_days = int(_safe_int(stress_model.get("max_exit_grace_days", 2), 2))
     panic_cross_bps = float(
         _safe_float(stress_model.get("panic_cross_bps", 50.0), 50.0)
     )
@@ -1454,9 +1478,7 @@ def _simulate_trade_row(
         vol_x = _current_volume_at(
             x_sym, entry_day, volume_panel=volume_panel, liq_model=liq_model
         )
-        if (vol_y is not None and vol_y <= 0.0) or (
-            vol_x is not None and vol_x <= 0.0
-        ):
+        if (vol_y is not None and vol_y <= 0.0) or (vol_x is not None and vol_x <= 0.0):
             continue
 
         cap_pair_frac, _, _ = _pair_package_capacity(
@@ -1591,26 +1613,20 @@ def _simulate_trade_row(
         entry_state_x.get("_stress_gap_bps") if entry_state_x is not None else np.nan
     )
     default_out["lob_range_bps_y"] = (
-        entry_state_y.get("_stress_range_bps")
-        if entry_state_y is not None
-        else np.nan
+        entry_state_y.get("_stress_range_bps") if entry_state_y is not None else np.nan
     )
     default_out["lob_range_bps_x"] = (
-        entry_state_x.get("_stress_range_bps")
-        if entry_state_x is not None
-        else np.nan
+        entry_state_x.get("_stress_range_bps") if entry_state_x is not None else np.nan
     )
     default_out["lob_volume_rel_y"] = (
-        entry_state_y.get("_stress_volume_rel")
-        if entry_state_y is not None
-        else np.nan
+        entry_state_y.get("_stress_volume_rel") if entry_state_y is not None else np.nan
     )
     default_out["lob_volume_rel_x"] = (
-        entry_state_x.get("_stress_volume_rel")
-        if entry_state_x is not None
-        else np.nan
+        entry_state_x.get("_stress_volume_rel") if entry_state_x is not None else np.nan
     )
-    default_out["exec_stress_regime_entry"] = str(default_out.get("lob_regime_entry", ""))
+    default_out["exec_stress_regime_entry"] = str(
+        default_out.get("lob_regime_entry", "")
+    )
 
     slip0_y, imp0_y = _slip_decomp(
         entry_rep_y,
@@ -1755,12 +1771,14 @@ def _simulate_trade_row(
         vol_x = _current_volume_at(
             x_sym, current_day, volume_panel=volume_panel, liq_model=liq_model
         )
-        if (vol_y is not None and vol_y <= 0.0) or (
-            vol_x is not None and vol_x <= 0.0
-        ):
+        if (vol_y is not None and vol_y <= 0.0) or (vol_x is not None and vol_x <= 0.0):
             continue
 
-        is_grace = attempt_idx > 0 or pd.Timestamp(current_day).normalize() > pd.Timestamp(planned_exit).normalize()
+        is_grace = (
+            attempt_idx > 0
+            or pd.Timestamp(current_day).normalize()
+            > pd.Timestamp(planned_exit).normalize()
+        )
         flow_exit_use = (
             {"mode": "taker", "fallback_to_taker": True}
             if is_grace
@@ -1861,7 +1879,9 @@ def _simulate_trade_row(
 
     if residual_y > 0 or residual_x > 0:
         forced_day = pd.Timestamp(exit_candidates[-1])
-        force_regime = _worse_regime(exit_regime_worst, str(default_out.get("lob_regime_exit", "normal")))
+        force_regime = _worse_regime(
+            exit_regime_worst, str(default_out.get("lob_regime_exit", "normal"))
+        )
         force_bps = _panic_cross_bps_for_regime(panic_cross_bps, force_regime)
         residual_before_force_y = int(residual_y)
         residual_before_force_x = int(residual_x)
@@ -1911,7 +1931,11 @@ def _simulate_trade_row(
 
     exit_vwap_y = float(exit_cash_y / exit_filled_y) if exit_filled_y > 0 else np.nan
     exit_vwap_x = float(exit_cash_x / exit_filled_x) if exit_filled_x > 0 else np.nan
-    if actual_exit is None or not np.isfinite(exit_vwap_y) or not np.isfinite(exit_vwap_x):
+    if (
+        actual_exit is None
+        or not np.isfinite(exit_vwap_y)
+        or not np.isfinite(exit_vwap_x)
+    ):
         default_out["exec_rejected"] = True
         default_out["exec_reject_reason"] = "missing_exit_execution"
         return default_out
@@ -1935,9 +1959,7 @@ def _simulate_trade_row(
         )
     )
     default_out["exec_forced_exit"] = bool(forced_exit)
-    default_out["exec_stress_regime_exit"] = str(
-        default_out.get("lob_regime_exit", "")
-    )
+    default_out["exec_stress_regime_exit"] = str(default_out.get("lob_regime_exit", ""))
     if not forced_exit:
         default_out["exec_residual_units_y"] = int(residual_y)
         default_out["exec_residual_units_x"] = int(residual_x)

@@ -3,7 +3,6 @@ from __future__ import annotations
 import logging
 from typing import Mapping
 
-import numpy as np
 import pandas as pd
 
 from backtest.utils.tz import align_ts_to_index, ensure_dtindex_tz, to_naive_local
@@ -16,10 +15,53 @@ def _is_intraday(idx: pd.DatetimeIndex) -> bool:
         return False
     # treat as intraday if there is any non-midnight timestamp
     try:
-        offs = idx - idx.normalize()
-        return bool((offs != pd.Timedelta(0)).any())
+        return not bool(idx.is_normalized)
     except Exception:
-        return False
+        try:
+            offs = idx - idx.normalize()
+            return bool((offs != pd.Timedelta(0)).any())
+        except Exception:
+            return False
+
+
+def _clean_dt_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    out = pd.DatetimeIndex(idx)
+    if out.empty:
+        return out
+    if bool(out.isna().any()):
+        out = out[~out.isna()]
+    if out.empty:
+        return out
+    if not out.is_monotonic_increasing:
+        out = out.sort_values()
+    if bool(out.has_duplicates):
+        out = out[~out.duplicated()]
+    return out
+
+
+def _coerce_ts_for_calendar(
+    ts: pd.Timestamp,
+    *,
+    ref_tz: str | None,
+) -> pd.Timestamp:
+    t = pd.Timestamp(ts)
+    if ref_tz is None:
+        return pd.Timestamp(to_naive_local(t)) if t.tzinfo is not None else t
+    if t.tzinfo is None:
+        return t.tz_localize(ref_tz)
+    return t.tz_convert(ref_tz)
+
+
+def _coerce_idx_for_union(
+    idx: pd.DatetimeIndex,
+    *,
+    ref_tz: str | None,
+) -> pd.DatetimeIndex:
+    if ref_tz is None:
+        if idx.tz is None:
+            return idx
+        return pd.DatetimeIndex(to_naive_local(idx))
+    return ensure_dtindex_tz(idx, ref_tz)
 
 
 def build_trading_calendar(
@@ -40,38 +82,40 @@ def build_trading_calendar(
             and isinstance(s.index, pd.DatetimeIndex)
             and len(s.index) > 0
         ):
-            idxs.append(pd.DatetimeIndex(pd.to_datetime(s.index, errors="coerce")))
+            idx = _clean_dt_index(s.index)
+            if not idx.empty:
+                idxs.append(idx)
     if not idxs:
         return pd.DatetimeIndex([])
 
-    # Union of observed timestamps (keeps tz if any index has tz).
-    base = pd.DatetimeIndex(
-        sorted(pd.Index(np.concatenate([i.dropna().unique().to_numpy() for i in idxs])))
+    ref_tz = next((str(idx.tz) for idx in idxs if idx.tz is not None), None)
+    is_intraday = any(_is_intraday(idx) for idx in idxs)
+
+    if is_intraday:
+        base = _coerce_idx_for_union(idxs[0], ref_tz=ref_tz)
+        for idx in idxs[1:]:
+            base = base.union(_coerce_idx_for_union(idx, ref_tz=ref_tz))
+        return _clean_dt_index(base)
+
+    start = min(
+        _coerce_ts_for_calendar(pd.Timestamp(idx.min()), ref_tz=ref_tz) for idx in idxs
     )
-    base = base[~base.isna()]
-    base = base.sort_values().unique()
-    if base.empty:
-        return pd.DatetimeIndex([])
-
-    tz = base.tz
-    start = base.min()
-    end = base.max()
-
-    if _is_intraday(base):
-        return base
+    end = max(
+        _coerce_ts_for_calendar(pd.Timestamp(idx.max()), ref_tz=ref_tz) for idx in idxs
+    )
 
     # Daily: attempt to align to an exchange calendar by session date.
     try:
-        import pandas_market_calendars as mcal  # type: ignore[import-untyped]
+        import pandas_market_calendars as mcal  # type: ignore[import-not-found, import-untyped]
 
         cal = mcal.get_calendar(str(calendar_name or "XNYS"))
         start_d = pd.Timestamp(to_naive_local(start)).date()
         end_d = pd.Timestamp(to_naive_local(end)).date()
         sched = cal.schedule(start_date=start_d, end_date=end_d)
         days = pd.DatetimeIndex(sched.index)
-        if tz is not None:
+        if ref_tz is not None:
             # session index is tz-naive; interpret as exchange-local wall-clock day markers
-            days = ensure_dtindex_tz(days, str(tz))
+            days = ensure_dtindex_tz(days, ref_tz)
         return days
     except Exception as e:
         logger.debug(
@@ -81,8 +125,8 @@ def build_trading_calendar(
     start_naive = to_naive_local(start)
     end_naive = to_naive_local(end)
     days = pd.bdate_range(start=start_naive, end=end_naive, freq="B")
-    if tz is not None:
-        days = ensure_dtindex_tz(days, str(tz))
+    if ref_tz is not None:
+        days = ensure_dtindex_tz(days, ref_tz)
     return pd.DatetimeIndex(days)
 
 

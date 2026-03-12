@@ -37,6 +37,13 @@ if not logger.handlers:
 logger.setLevel(logging.INFO)
 
 
+def _coerce_float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_index_to_calendar(
     idx: pd.DatetimeIndex, cal: pd.DatetimeIndex
 ) -> pd.DatetimeIndex:
@@ -199,12 +206,10 @@ def _build_train_inputs_from_pairs_data(
             pair_half_life = float(cointegration.get("half_life", np.nan))
         except Exception:
             pair_half_life = float("nan")
-        beta_meta = cointegration.get("beta")
-        beta_ok = False
-        try:
-            beta_ok = bool(np.isfinite(float(beta_meta)) and float(beta_meta) > 0.0)
-        except Exception:
-            beta_ok = False
+        beta_meta = _coerce_float_or_none(cointegration.get("beta"))
+        beta_ok = bool(
+            beta_meta is not None and np.isfinite(beta_meta) and beta_meta > 0.0
+        )
         if not beta_ok:
             beta_hat, _ = _strat_helpers.estimate_beta_ols_with_intercept_details(y, x)
             if beta_hat is None:
@@ -387,6 +392,72 @@ def _single_stage_bo_cfg(cfg: Mapping[str, Any]) -> Mapping[str, Any]:
     return bo_cfg
 
 
+def _score_fast_candidate(
+    *,
+    per_pair_prices: Mapping[str, Mapping[str, Any]],
+    cal: pd.DatetimeIndex,
+    init_cap: float,
+    cv: Any,
+    seed: int,
+    out_dir: Path,
+    z_default: int,
+    hmax0: int,
+    cool0: int,
+    cfg: Mapping[str, Any],
+    spreads: Mapping[str, pd.Series],
+    component: str,
+    params_for_log: Mapping[str, Any],
+    entry_z: float,
+    exit_z: float,
+    stop_z: float,
+    markov_overrides: Mapping[str, Any] | None = None,
+) -> float:
+    if cv.enabled:
+        return _fold_score_with_refit(
+            per_pair_prices=per_pair_prices,
+            calendar=cal,
+            initial_capital=init_cap,
+            cv=cv,
+            seed=seed,
+            component=component,
+            out_dir=out_dir,
+            params_for_log=params_for_log,
+            z_window=int(z_default),
+            entry_z=float(entry_z),
+            exit_z=float(exit_z),
+            stop_z=float(stop_z),
+            max_hold_days=hmax0,
+            cooldown_days=cool0,
+            cfg=cfg,
+            markov_overrides=markov_overrides,
+        )
+
+    pnl_by_pair = _simulate_stage_pnl(
+        spreads=spreads,
+        per_pair_prices=per_pair_prices,
+        z_window=z_default,
+        entry_z=float(entry_z),
+        exit_z=float(exit_z),
+        stop_z=float(stop_z),
+        max_hold_days=hmax0,
+        cooldown_days=cool0,
+        cfg=cfg,
+        calendar=cal,
+        markov_overrides=markov_overrides,
+    )
+    pnl = _portfolio_pnl_equal_weight(pnl_by_pair, cal)
+    return _fold_score_from_pnl(
+        pnl,
+        calendar=cal,
+        initial_capital=init_cap,
+        cv=cv,
+        seed=seed,
+        component=component,
+        out_dir=out_dir,
+        params_for_log=params_for_log,
+    )
+
+
 def run_paper_bo_conservative(
     *,
     prices: pd.DataFrame,
@@ -412,10 +483,6 @@ def run_paper_bo_conservative(
     bo_cfg = _single_stage_bo_cfg(cfg)
     realistic_cfg = _parse_realistic_cfg(cfg)
     markov_enabled, markov_p0, markov_h0 = _markov_bo_defaults(cfg)
-    if markov_enabled and mode != "realistic":
-        raise ValueError(
-            "Markov BO requires bo.mode='realistic' when markov_filter.enabled=true."
-        )
 
     per_pair_prices, cal = _build_train_inputs(
         prices=prices, pairs=pairs, pairs_data=pairs_data, cfg=cfg
@@ -506,55 +573,28 @@ def run_paper_bo_conservative(
                 metric=realistic_cfg.metric,
                 initial_capital=init_cap,
             )
-        elif cv.enabled:
-            sc = _fold_score_with_refit(
-                per_pair_prices=per_pair_prices,
-                calendar=cal,
-                initial_capital=init_cap,
-                cv=cv,
-                seed=seed,
-                component="theta_sig",
-                out_dir=out_dir,
-                params_for_log={
-                    "entry_z": ez,
-                    "exit_z": xz,
-                    "stop_z": sz,
-                },
-                z_window=int(z_default),
-                entry_z=ez,
-                exit_z=xz,
-                stop_z=sz,
-                max_hold_days=hmax0,
-                cooldown_days=cool0,
-                cfg=cfg,
-            )
         else:
-            pnl_by_pair = _simulate_stage_pnl(
-                spreads=spreads,
+            sc = _score_fast_candidate(
                 per_pair_prices=per_pair_prices,
-                z_window=z_default,
-                entry_z=ez,
-                exit_z=xz,
-                stop_z=sz,
-                max_hold_days=hmax0,
-                cooldown_days=cool0,
-                cfg=cfg,
-                calendar=cal,
-            )
-            pnl = _portfolio_pnl_equal_weight(pnl_by_pair, cal)
-            sc = _fold_score_from_pnl(
-                pnl,
-                calendar=cal,
-                initial_capital=init_cap,
+                cal=cal,
+                init_cap=init_cap,
                 cv=cv,
                 seed=seed,
-                component="theta_sig",
                 out_dir=out_dir,
+                z_default=z_default,
+                hmax0=hmax0,
+                cool0=cool0,
+                cfg=cfg,
+                spreads=spreads,
+                component="theta_sig",
                 params_for_log={
                     "entry_z": ez,
                     "exit_z": xz,
                     "stop_z": sz,
                 },
+                entry_z=ez,
+                exit_z=xz,
+                stop_z=sz,
             )
         cache_theta[key] = float(sc)
         return float(sc)
@@ -617,31 +657,58 @@ def run_paper_bo_conservative(
             if key in cache_markov:
                 return float(cache_markov[key])
 
-            sc = _fold_score_realistic(
-                cfg=cfg,
-                prices=prices,
-                prices_panel=cast(pd.DataFrame, prices_panel),
-                pairs_data=cast(Mapping[str, Any], pairs_data),
-                adv_map=adv_map,
-                calendar=cal,
-                cv=cv,
-                seed=seed,
-                component="theta_markov",
-                out_dir=out_dir,
-                params_for_log={
-                    "min_revert_prob": p_min,
-                    "horizon_days": horizon,
-                },
-                theta={
-                    "theta_sig_hat": dict(theta_hat),
-                    "theta_markov_hat": {
+            if mode == "realistic":
+                sc = _fold_score_realistic(
+                    cfg=cfg,
+                    prices=prices,
+                    prices_panel=cast(pd.DataFrame, prices_panel),
+                    pairs_data=cast(Mapping[str, Any], pairs_data),
+                    adv_map=adv_map,
+                    calendar=cal,
+                    cv=cv,
+                    seed=seed,
+                    component="theta_markov",
+                    out_dir=out_dir,
+                    params_for_log={
                         "min_revert_prob": p_min,
                         "horizon_days": horizon,
                     },
-                },
-                metric=realistic_cfg.metric,
-                initial_capital=init_cap,
-            )
+                    theta={
+                        "theta_sig_hat": dict(theta_hat),
+                        "theta_markov_hat": {
+                            "min_revert_prob": p_min,
+                            "horizon_days": horizon,
+                        },
+                    },
+                    metric=realistic_cfg.metric,
+                    initial_capital=init_cap,
+                )
+            else:
+                sc = _score_fast_candidate(
+                    per_pair_prices=per_pair_prices,
+                    cal=cal,
+                    init_cap=init_cap,
+                    cv=cv,
+                    seed=seed,
+                    out_dir=out_dir,
+                    z_default=z_default,
+                    hmax0=hmax0,
+                    cool0=cool0,
+                    cfg=cfg,
+                    spreads=spreads,
+                    component="theta_markov",
+                    params_for_log={
+                        "min_revert_prob": p_min,
+                        "horizon_days": horizon,
+                    },
+                    entry_z=float(theta_hat["entry_z"]),
+                    exit_z=float(theta_hat["exit_z"]),
+                    stop_z=float(theta_hat["stop_z"]),
+                    markov_overrides={
+                        "min_revert_prob": p_min,
+                        "horizon_days": horizon,
+                    },
+                )
             cache_markov[key] = float(sc)
             return float(sc)
 

@@ -94,7 +94,9 @@ def explain(cfg, parent_notional, px, lot):
 
     print("\nNote:")
     print("  - If ALL candidates fail min_child_notional OR min_notional,")
-    print("    the result is an empty child-order list -> 'Routing produced no child orders'.")
+    print(
+        "    the result is an empty child-order list -> 'Routing produced no child orders'."
+    )
     print("  - 'rounding: ceil' prevents zero-share orders for very small clips.")
     print("  - Set venue min_notional = 0 if you want to test small tickets.")
 

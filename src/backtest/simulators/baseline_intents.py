@@ -131,6 +131,13 @@ def _sum_adv(*values: float | None) -> float | None:
     return float(total) if seen and total > 0.0 else None
 
 
+def _coerce_float_or_none(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _normalize_intents(
     portfolio: Mapping[str, Mapping[str, Any]],
     *,
@@ -250,15 +257,23 @@ def _current_capital(
             py = row.get("entry_price_y")
         if px is None:
             px = row.get("entry_price_x")
-        try:
-            total += float(row.get("y_units", 0.0)) * (
-                float(py) - float(row.get("entry_price_y", 0.0))
-            )
-            total += float(row.get("x_units", 0.0)) * (
-                float(px) - float(row.get("entry_price_x", 0.0))
-            )
-        except Exception:
+        py_val = _coerce_float_or_none(py)
+        px_val = _coerce_float_or_none(px)
+        entry_y = _coerce_float_or_none(row.get("entry_price_y", 0.0))
+        entry_x = _coerce_float_or_none(row.get("entry_price_x", 0.0))
+        y_units = _coerce_float_or_none(row.get("y_units", 0.0))
+        x_units = _coerce_float_or_none(row.get("x_units", 0.0))
+        if (
+            py_val is None
+            or px_val is None
+            or entry_y is None
+            or entry_x is None
+            or y_units is None
+            or x_units is None
+        ):
             continue
+        total += y_units * (py_val - entry_y)
+        total += x_units * (px_val - entry_x)
     return float(total)
 
 
@@ -571,7 +586,9 @@ def simulate_baseline_intent_portfolio(
                     row["symbols"],
                     row["actual_notionals"],
                 )
-            realized_pnl += float(row.get("net_pnl_for_risk", row.get("gross_pnl", 0.0)))
+            realized_pnl += float(
+                row.get("net_pnl_for_risk", row.get("gross_pnl", 0.0))
+            )
             pair_key = str(row["pair"])
             cool_until = _cooldown_signal_until(
                 calendar,
@@ -828,7 +845,9 @@ def simulate_baseline_intent_portfolio(
             pair_busy.pop(pair_key, None)
             continue
         trade_row = final_trade_df.iloc[0].to_dict()
-        if bool(trade_row.get("exec_rejected", False)) or pd.isna(trade_row.get("entry_date")):
+        if bool(trade_row.get("exec_rejected", False)) or pd.isna(
+            trade_row.get("entry_date")
+        ):
             blocked_exec += 1
             if rm is not None:
                 rm.register_close_pair(reservation_key, symbols, projected_notionals)
@@ -840,7 +859,9 @@ def simulate_baseline_intent_portfolio(
                     "event_date": first_exec_date,
                     "state_from": "pending_entry",
                     "state_to": "flat",
-                    "reason": str(trade_row.get("exec_reject_reason") or "entry_execution_failed"),
+                    "reason": str(
+                        trade_row.get("exec_reject_reason") or "entry_execution_failed"
+                    ),
                 }
             )
             continue
@@ -850,7 +871,9 @@ def simulate_baseline_intent_portfolio(
         trade_row["decision_date"] = pd.Timestamp(signal_date)
         trade_row["z_signal"] = float(z_signal)
         trade_row["entry_capital_base"] = float(cap_now)
-        trade_row["adv_sum_entry"] = float(adv_sum_entry) if adv_sum_entry is not None else np.nan
+        trade_row["adv_sum_entry"] = (
+            float(adv_sum_entry) if adv_sum_entry is not None else np.nan
+        )
         trade_row["cooldown_days"] = int(state.get("cooldown_days", 0) or 0)
         trade_row["net_pnl_for_risk"] = float(
             trade_row.get("net_pnl", trade_row.get("gross_pnl", 0.0)) or 0.0
@@ -863,7 +886,9 @@ def simulate_baseline_intent_portfolio(
         trade_row["reservation_key"] = reservation_key
         trade_row["trade_key"] = trade_key
 
-        actual_entry = _align_ts_to_index(pd.Timestamp(trade_row["entry_date"]), calendar)
+        actual_entry = _align_ts_to_index(
+            pd.Timestamp(trade_row["entry_date"]), calendar
+        )
         actual_exit = _align_ts_to_index(pd.Timestamp(trade_row["exit_date"]), calendar)
         trade_row["entry_date"] = actual_entry
         trade_row["exit_date"] = actual_exit
@@ -877,13 +902,13 @@ def simulate_baseline_intent_portfolio(
             if actual_entry > first_exec_date:
                 pending_rows[intent_id] = {
                     "pair_key": pair_key,
-                "symbols": symbols,
-                "projected_notionals": projected_notionals,
-                "actual_notionals": trade_row["actual_notionals"],
-                "reservation_key": reservation_key,
-                "trade_key": trade_key,
-                "trade_row": trade_row,
-            }
+                    "symbols": symbols,
+                    "projected_notionals": projected_notionals,
+                    "actual_notionals": trade_row["actual_notionals"],
+                    "reservation_key": reservation_key,
+                    "trade_key": trade_key,
+                    "trade_row": trade_row,
+                }
             heapq.heappush(
                 transitions_heap,
                 (pd.Timestamp(actual_entry), 0, "fill", intent_id),
