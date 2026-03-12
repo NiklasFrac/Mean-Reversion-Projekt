@@ -246,7 +246,7 @@ def build_tradable_mask(
         close_norm = closes.copy()
         if open_norm.index.tz is None:
             open_norm.index = open_norm.index.tz_localize("America/New_York")
-        # Safety: disjointness (optional, but O(n) - therefore not enforced via assert)
+            # Safety: disjointness (optional, but O(n) - therefore not enforced via assert)
             close_norm.index = close_norm.index.tz_localize("America/New_York")
         open_norm.index = open_norm.index.tz_localize(None).normalize()
         close_norm.index = close_norm.index.tz_localize(None).normalize()

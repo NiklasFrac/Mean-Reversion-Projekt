@@ -101,9 +101,7 @@ def main() -> None:
         for trk, sym, lab in violations[:20]:
             print(f"   - {trk}:{sym}: {lab}")
     else:
-        print(
-            f"\n{GREEN} No non-causal fill methods labeled (with causal_only=true)."
-        )
+        print(f"\n{GREEN} No non-causal fill methods labeled (with causal_only=true).")
 
     # --- Sample test: filled positions must not depend on the right neighbor
     # Heuristic: if causal_only, fill=ffill -> fill value = last valid value on the left.

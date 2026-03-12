@@ -24,7 +24,7 @@ def _read_df_any(p: Path) -> pd.DataFrame:
     if p.suffix == ".parquet":
         df = pd.read_parquet(p)
         return df if isinstance(df, pd.DataFrame) else pd.DataFrame(df)
-    # CSV: versuche Index+Dates, fallback plain
+    # CSV: try index+dates first, then fall back to plain loading
     try:
         return pd.read_csv(p, index_col=0, parse_dates=True)
     except Exception:
@@ -253,7 +253,9 @@ def summarize_df(df: pd.DataFrame | None, name: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="runs/data", help="Path to the data directory")
+    ap.add_argument(
+        "--data-dir", default="runs/data", help="Path to the data directory"
+    )
     args = ap.parse_args(argv)
     data_dir = Path(args.data_dir)
 
@@ -283,7 +285,7 @@ def main(argv: list[str] | None = None) -> int:
 
     proc_sum = summarize_df(filled_df, "processing_filled")
 
-    # ---- Diag/Manifest lesen (optional) ----
+    # ---- Read diagnostics/manifest (optional) ----
     grid_mode = fill_mode = None
     kept_count = removed_count = None
     schema_version = None
@@ -330,7 +332,7 @@ def main(argv: list[str] | None = None) -> int:
         except Exception:
             pass
 
-    # ---- Urteil ----
+    # ---- Verdict ----
     raw_cols = uni_sum["cols"]
     filled_cols = proc_sum["cols"]
 
@@ -339,9 +341,7 @@ def main(argv: list[str] | None = None) -> int:
         reason = "Universe did not find/create a usable raw_prices cache."
     elif filled_cols == 0 and raw_cols > 0:
         verdict = "LIKELY_PROCESSING_ISSUE"
-        reason = (
-            "Processing produced no output despite an existing universe cache."
-        )
+        reason = "Processing produced no output despite an existing universe cache."
     elif raw_cols <= 10 and filled_cols <= raw_cols:
         verdict = "LIKELY_UNIVERSE_ISSUE"
         reason = f"Universe produced only {raw_cols} tickers (very few)."
@@ -365,9 +365,9 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         if raw_df is not None:
-            print("\n[UNIVERSE] Beispiel-Ticker:", list(raw_df.columns[:10]))
+            print("\n[UNIVERSE] Sample tickers:", list(raw_df.columns[:10]))
         if filled_df is not None:
-            print("[PROCESSING] Beispiel-Ticker:", list(filled_df.columns[:10]))
+            print("[PROCESSING] Sample tickers:", list(filled_df.columns[:10]))
     except Exception:
         pass
 

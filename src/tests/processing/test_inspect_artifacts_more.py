@@ -48,7 +48,7 @@ def test_main_verdict_processing_issue_big_drop(
     out = capsys.readouterr().out
     assert rc == 0
     assert "LIKELY_PROCESSING_ISSUE" in out
-    assert "Starker Drop" in out
+    assert "Large drop" in out
 
 
 def test_main_verdict_no_clear_fault(

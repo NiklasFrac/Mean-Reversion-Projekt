@@ -180,7 +180,10 @@ def main() -> int:
     sc.check(not exec_df.empty, f"Exec DataFrame is not empty (shape={exec_df.shape})")
     if not exec_df.empty:
         sc.check(is_tz_ny(exec_df.index), "Exec index is America/New_York (tz-aware)")
-        sc.check(exec_df.index.is_monotonic_increasing, "Exec index is monotonically increasing")
+        sc.check(
+            exec_df.index.is_monotonic_increasing,
+            "Exec index is monotonically increasing",
+        )
 
         nonpos_exec = int((exec_df <= 0).sum().sum())
         sc.check(
