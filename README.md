@@ -1,4 +1,4 @@
-# PythonProjekt
+# Mean-Reversion-Projekt
 
 This repository contains a reproducible quantitative research pipeline with
 four operational stages:
