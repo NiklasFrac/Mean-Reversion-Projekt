@@ -46,6 +46,12 @@ Universe -> Processing -> Analysis -> Backtest
 - `src/tests/` - stage-specific test suites
 - `runs/configs/` - canonical runtime configurations
 
+## Output Layout
+
+- `runs/data/` stores mutable upstream and intermediate artefacts from Universe, Processing, and Analysis.
+- `runs/results/` stores generated Backtest, calibration, Bayesian optimization, and reporting outputs.
+- Runtime outputs are generally not versioned unless explicitly committed for audit or review.
+
 ## License
 
 The code in this repository is licensed under the MIT License. Data files and

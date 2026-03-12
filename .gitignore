@@ -25,6 +25,7 @@ htmlcov/
 runs/logs/
 runs/metadata/
 runs/mlruns/
-runs/results/
+runs/results/*
+!runs/results/README.md
 runs/tmp/
 runs/tmp_tearsheet_check/
