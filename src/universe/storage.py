@@ -245,9 +245,7 @@ def load_fundamentals_store(path: Path | None) -> pd.DataFrame:
             else:
                 df = pd.read_csv(candidate, index_col=0)
         except Exception as e:
-            logger.warning(
-                "Could not load fundamentals cache (%s): %s", candidate, e
-            )
+            logger.warning("Could not load fundamentals cache (%s): %s", candidate, e)
             continue
         if not isinstance(df, pd.DataFrame):
             continue
@@ -274,9 +272,7 @@ def save_fundamentals_store(df: pd.DataFrame, path: Path) -> Path:
         else:
             df.to_csv(path, index=True)
             used_path = path
-        logger.info(
-            "Saved fundamentals: %s (rows=%d)", used_path, int(df.shape[0])
-        )
+        logger.info("Saved fundamentals: %s (rows=%d)", used_path, int(df.shape[0]))
     except Exception as e:
         if suffix in {".parquet", ".pq"}:
             fallback = path.with_suffix(".pkl")

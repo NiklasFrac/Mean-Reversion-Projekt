@@ -722,7 +722,9 @@ def build_universe(
                 checkpoint.retain_only(checkpoint_retain_symbols)
         except Exception as e:
             logger.warning(
-                "Failed to write fundamentals output (%s): %s", fundamentals_store_path, e
+                "Failed to write fundamentals output (%s): %s",
+                fundamentals_store_path,
+                e,
             )
 
     # --- Historical ADV computation ---
