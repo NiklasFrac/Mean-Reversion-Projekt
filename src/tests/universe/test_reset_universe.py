@@ -99,7 +99,7 @@ def test_delete_target_respects_repo_boundary_and_dry_run(tmp_path: Path):
             root, ru.ResetTarget(outside, "file", "outside"), yes=True
         )
         assert not did
-        assert "ausserhalb Repo" in msg
+        assert "outside repo" in msg
         assert outside.exists()
     finally:
         outside.unlink(missing_ok=True)
@@ -137,7 +137,7 @@ def test_main_default_executes_deletions(
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "Fertig. Geloescht:" in out
+    assert "Done. Deleted:" in out
     assert not victim.exists()
 
 
@@ -153,7 +153,7 @@ def test_main_dry_run_prints_summary(
     out = capsys.readouterr().out
 
     assert rc == 0
-    assert "Dry-run fertig" in out
+    assert "Dry run complete." in out
 
 
 def test_main_raises_when_cfg_missing(tmp_path: Path):

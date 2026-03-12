@@ -199,7 +199,7 @@ def gather_universe_reset_targets(
 def _delete_target(root: Path, t: ResetTarget, *, yes: bool) -> tuple[bool, str]:
     p = t.path
     if not _is_within(root, p):
-        return False, f"SKIP (ausserhalb Repo): {p} ({t.reason})"
+        return False, f"SKIP (outside repo): {p} ({t.reason})"
     if not p.exists():
         return False, f"OK (not present): {p} ({t.reason})"
     if not yes:
