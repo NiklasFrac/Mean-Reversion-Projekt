@@ -26,7 +26,7 @@ def test_atomic_write_json_and_pickle_are_atomic(tmp_path: Path):
         back = pickle.load(f)
     assert back == obj
 
-    # Überschreiben ohne Race/Artefakt
+    # overwrite without race/artifact
     obj2 = {"a": 2}
     atomic_write_json(obj2, jp)
     assert json.loads(jp.read_text(encoding="utf-8")) == obj2

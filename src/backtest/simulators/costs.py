@@ -12,7 +12,7 @@ import pandas as pd
 
 from backtest.config.execution_costs import resolve_execution_cost_spec
 
-# Für Borrow-Hilfen & Units/Sides (nur intern in diesem Modul genutzt)
+# For borrow helpers & units/sides (used only internally in this module)
 try:
     from .common import infer_side as _side_for_leg
     from .common import infer_units as _infer_units_for_leg
@@ -20,7 +20,7 @@ except Exception:  # pragma: no cover
 
     def _infer_units_for_leg(row: pd.Series, leg: str) -> int:
         try:
-            # Fallback: übliche Spaltennamen; negatives Vorzeichen => short
+            # Fallback: common column names; negative sign => short
             leg = leg.lower()
             for k in (
                 f"units_{leg}",
@@ -67,27 +67,27 @@ logger.setLevel(logging.INFO)
 @dataclass(frozen=True)
 class ExecParams:
     """
-    Ausführungs-Parameter für vektorisierte (heuristische) Kosten/Slippage-Modelle.
+    Execution parameters for vectorized (heuristic) cost/slippage models.
 
     Einheiten:
-      - bps-Angaben werden als Dezimal-Fraktionen gespeichert (1 bp = 0.0001).
-      - Währungsbeträge in Cash-Einheiten.
+      - bps values are stored as decimal fractions (1 bp = 0.0001).
+      - Currency amounts in cash units.
 
     Felder:
       base_slippage      : Basis-Slippage (z.B. 0.0002 = 2 bps)
       adv_impact_k       : Linearer Impact-Koeffizient (impact_model='linear')
-      sqrt_coefficient   : Faktor im sqrt-Modell (× Volatilität)
+      sqrt_coefficient   : factor in the sqrt model (x volatility)
       power_alpha        : Exponent im Power-Modell (impact_model='power')
       impact_model       : 'sqrt' | 'linear' | 'power'
-      impact_min_bps     : Mindest-Impact in bps (als Floor NUR auf den Impact-Anteil)
-      max_slippage       : Obergrenze für die GESAMTE Slippage-Fraktion
-      min_fee            : Mindestgebühr je Trade-Event (Währung)
-      fill_prob_k        : Krümmung für partielle Fill-Heuristik
-      min_fill_prob      : Untere Schranke der Fill-Heuristik
+      impact_min_bps     : minimum impact in bps (used as a floor ONLY on the impact component)
+      max_slippage       : upper bound for the TOTAL slippage fraction
+      min_fee            : minimum fee per trade event (currency)
+      fill_prob_k        : curvature for the partial-fill heuristic
+      min_fill_prob      : lower bound of the fill heuristic
 
-    Hinweise:
-      - Im 'power'-Modell wird, falls gesetzt, `power_coefficient` als Skalenfaktor verwendet.
-        Sonst fällt es aus Kompatibilitätsgründen auf `sqrt_coefficient` zurück.
+    Notes:
+      - In the 'power' model, `power_coefficient` is used as a scale factor when set.
+        Otherwise it falls back to `sqrt_coefficient` for compatibility reasons.
     """
 
     base_slippage: float = 0.0002
@@ -95,20 +95,20 @@ class ExecParams:
     sqrt_coefficient: float = 0.1
     power_alpha: float = 0.6
     impact_model: str = "sqrt"  # 'sqrt' | 'linear' | 'power'
-    impact_min_bps: float = 0.0  # nur Impact-Floor, in bps
+    impact_min_bps: float = 0.0  # impact floor only, in bps
     max_slippage: float = 0.02
     min_fee: float = 0.0
     fill_prob_k: float = 3.0
     min_fill_prob: float = 0.05
-    # Optionaler, semantisch klarer Skalenfaktor für das Power-Modell
+    # Optional, semantically clearer scale factor for the power model
     power_coefficient: float | None = None
 
     def sanitized(self) -> ExecParams:
-        """Clamp/normalisiert Werte in sinnvolle Bereiche und säubert Modell-String."""
+        """Clamp/normalize values into sensible ranges and clean the model string."""
         model = str(self.impact_model or "sqrt").strip().lower()
         if model not in {"sqrt", "linear", "power"}:
             model = "sqrt"
-        # power_coefficient ist optional – clamp nur wenn nicht None
+        # power_coefficient is optional - clamp only when not None
         pcoef = (
             None
             if self.power_coefficient is None
@@ -135,7 +135,7 @@ DEFAULT_EXECUTION_PARAMS = ExecParams().sanitized()
 
 def exec_params_from_cfg(cfg: Mapping[str, Any]) -> ExecParams:
     """
-    Liest Parameter aus YAML:
+    Reads parameters from YAML:
       execution.heuristic: {
         base_slippage, sqrt_coefficient, adv_impact_k, power_alpha,
         impact_model, impact_min_bps, max_slippage, min_fee,
@@ -197,7 +197,7 @@ Number = int | float | np.number
 
 
 def _is_pos(n: Number | None) -> TypeGuard[Number]:
-    """True, wenn n gesetzt, endlich und > 0.0 ist."""
+    """True if n is set, finite, and > 0.0."""
     try:
         return (n is not None) and np.isfinite(n) and float(n) > 0.0
     except Exception:
@@ -205,7 +205,7 @@ def _is_pos(n: Number | None) -> TypeGuard[Number]:
 
 
 def _to_float(n: Number) -> float:
-    """Konvertiert Number robust zu float (für mypy explizit)."""
+    """Robustly converts a number to float (explicit for mypy)."""
     return float(cast(float, n))
 
 
@@ -222,10 +222,10 @@ def _combine_adv(adv_y: Number | None, adv_x: Number | None) -> float | None:
 
 def _combine_vol(vol_y: Number | None, vol_x: Number | None) -> float | None:
     """
-    Kombinierte Tagesvolatilität (heuristisch):
-      - beide vorhanden: RMS
-      - eine vorhanden : diese
-      - sonst          : None
+    Combined daily volatility (heuristic):
+      - both present: RMS
+      - one present : that one
+      - otherwise   : None
     """
     has_y = _is_pos(vol_y)
     has_x = _is_pos(vol_x)
@@ -242,10 +242,10 @@ def _combine_vol(vol_y: Number | None, vol_x: Number | None) -> float | None:
 @dataclass(frozen=True)
 class SimulationResult:
     """
-    Strukturierte Rückgabe von :func:`simulate_execution`.
+    Structured return value of :func:`simulate_execution`.
 
-    Alle Kostenfelder sind als positive Beträge in Basiswährung (gleiche Einheit
-    wie Preise) angegeben.
+    All cost fields are positive amounts in base currency (same unit
+    are specified (same unit as prices).
     """
 
     requested_size: int
@@ -277,7 +277,7 @@ class SimulationResult:
 
 
 def square_root_impact(notional_ratio: float, coeff: float = 0.1) -> float:
-    """√-Impact ~ coeff * sqrt(traded_notional / ADV). Rückgabe als Bruchteil."""
+    """sqrt impact ~ coeff * sqrt(traded_notional / ADV). Returns a fraction."""
     if notional_ratio <= 0:
         return 0.0
     return float(coeff) * math.sqrt(float(notional_ratio))
@@ -292,12 +292,12 @@ def calc_adv_slippage(
     """
     Slippage (Fraktion) in [0, max_slippage] als Funktion von Notional/ADV.
       - notional: komb. Notional (|px_y| + |px_x|) * size
-      - adv     : ADV in gleicher Währungseinheit (kombiniert oder Single-ADV)
-      - vol     : Tagesvolatilität (Fraktion), nur für 'sqrt' genutzt
-      - params  : ExecParams oder Mapping (execution.heuristic.*), unterstützt 'power' & impact_min_bps
+      - adv     : ADV in the same currency unit (combined or single ADV)
+      - vol     : daily volatility (fraction), used only for 'sqrt'
+      - params  : ExecParams or mapping (execution.heuristic.*), supports 'power' & impact_min_bps
 
     Impact-Floor:
-      - impact_min_bps wird nur auf den Impact-Anteil angewendet (nicht auf base_slippage).
+      - impact_min_bps is applied only to the impact component (not to base_slippage).
     """
     ep = (
         params
@@ -309,7 +309,7 @@ def calc_adv_slippage(
     if n <= 0.0:
         return 0.0
 
-    # ADV unbekannt → konservativer Baseline-Return
+    # ADV unknown -> conservative baseline return
     if not _is_pos(adv):
         return float(min(ep.base_slippage, ep.max_slippage))
 
@@ -321,7 +321,7 @@ def calc_adv_slippage(
     elif ep.impact_model == "linear":
         impact = ep.adv_impact_k * frac
     else:  # 'power'
-        # Skalenfaktor: bevorzugt power_coefficient, sonst Backcompat via sqrt_coefficient
+        # Scale factor: prefer power_coefficient, otherwise backcompat via sqrt_coefficient
         scale = (
             float(ep.power_coefficient)
             if ep.power_coefficient is not None
@@ -329,7 +329,7 @@ def calc_adv_slippage(
         )
         impact = scale * (frac ** max(0.0, float(ep.power_alpha)))
 
-    # Impact-Floor in bps nur auf den Impact-Anteil
+    # Impact floor in bps only on the impact component
     if ep.impact_min_bps > 0.0:
         impact = max(impact, ep.impact_min_bps / 10_000.0)
 
@@ -348,15 +348,15 @@ def calc_trade_cost(
     charge_fixed_when_zero_fill: bool = True,
 ) -> float:
     """
-    Gesamtkosten (Währung) für EIN Pair-Trade-Event (beide Legs):
+    Total cost (currency) for ONE pair-trade event (both legs):
       - Fixkosten : per_trade_fixed pro Leg → ×2
       - Slippage  : (|y|+|x|) * size * slippage_pct
-      - min_fee   : Mindestgebühr, falls > 0
+      - min_fee   : minimum fee, if > 0
 
     Parameter:
       charge_fixed_when_zero_fill:
         True  (Default) → Fixkosten fallen immer an (Event-basiert).
-        False → Fixkosten nur, wenn size > 0 (bei 0-Fill keine Fixkosten).
+        False → fixed costs only when size > 0 (no fixed costs on 0 fill).
     """
     try:
         size_i = int(max(0, int(round(float(size)))))
@@ -387,7 +387,7 @@ def calc_pair_slippage_pct(
     vol_x: Number | None,
     params: Mapping[str, Any] | ExecParams | None = None,
 ) -> float:
-    """Komfort-Helper: Slippage-Fraktion, indem ADV & Vol pro Leg kombiniert werden."""
+    """Convenience helper: slippage fraction by combining ADV and volatility per leg."""
     notional = (abs(float(price_y)) + abs(float(price_x))) * max(0.0, float(size))
     adv_pair = _combine_adv(adv_y, adv_x)
     vol_pair = _combine_vol(vol_y, vol_x)
@@ -400,9 +400,9 @@ def partial_fill_probability(
     params: Mapping[str, Any] | ExecParams | None = None,
 ) -> float:
     """
-    Heuristik für Füllwahrscheinlichkeit (Erwartungswert):
+    Heuristic for fill probability (expected value):
       p_full = max(min_fill_prob, 1 / (1 + (k * notional/adv)^2))
-    Falls ADV unbekannt oder notional<=0 → 1.0
+    If ADV is unknown or notional<=0 -> 1.0
     """
     ep = (
         params
@@ -428,10 +428,10 @@ def simulate_execution(
     charge_fixed_when_zero_fill: bool = True,
 ) -> SimulationResult:
     """
-    Deterministische Erwartungswert-Simulation eines Pair-Trade-Events.
+    Deterministic expected-value simulation of a pair-trade event.
 
-    RÜckgabe: :class:`SimulationResult` mit detaillierter Aufschlüsselung der
-    Kostenkomponenten. Alle Beträge sind positiv (Kosten).
+    Returns: :class:`SimulationResult` with a detailed breakdown of
+    cost components. All amounts are positive (costs).
     """
     ep = (
         params
@@ -449,7 +449,7 @@ def simulate_execution(
     notional = (price_y_f + price_x_f) * size_i
     slippage_pct = calc_adv_slippage(notional, adv, vol, ep)
 
-    # Erwartete Füllung
+    # Expected fill
     p_fill = partial_fill_probability(notional, adv, ep)
     filled_size = int(math.floor(size_i * p_fill + 1e-9))
     fill_ratio = float(filled_size / size_i) if size_i > 0 else 0.0
@@ -461,7 +461,7 @@ def simulate_execution(
     slip_base_cost = notional_filled * base_pct
     slip_impact_cost = notional_filled * impact_pct
 
-    # Gebühren (Fixkosten + Mindestfee-Top-Up)
+    # Fees (fixed costs + minimum-fee top-up)
     per_trade_fixed_f = float(per_trade_fixed)
     fixed_fee_cost = per_trade_fixed_f * 2.0
     if not charge_fixed_when_zero_fill and size_i == 0:
@@ -523,7 +523,7 @@ def _coalesce(*vals: Any, default: Any = None) -> Any:
 
 
 def _price_for_leg(row: pd.Series, leg: str) -> float | None:
-    """Preispräferenz: exec_entry_vwap_* → entry_price_* → price_* → py_/px_-Aliase."""
+    """Price preference: exec_entry_vwap_* -> entry_price_* -> price_* -> py_/px_ aliases."""
     leg = leg.lower()
     candidates = [f"exec_entry_vwap_{leg}", f"entry_price_{leg}", f"price_{leg}"]
     candidates += (
@@ -540,7 +540,7 @@ def _price_for_leg(row: pd.Series, leg: str) -> float | None:
 
 
 def _liquidity_flag(row: pd.Series, leg: str) -> Literal["maker", "taker"]:
-    """Maker/Taker-Flag pro Leg (Default: taker). String oder Bool (True ~ maker)."""
+    """Maker/taker flag per leg (default: taker). String or bool (True ~ maker)."""
     leg = leg.lower()
     for cand in (
         f"liquidity_{leg}",
@@ -571,10 +571,10 @@ def _maker_taker_fees_for_leg(
     notional: float, shares: float, is_maker: bool, fee_cfg: FeeCfg | Mapping[str, Any]
 ) -> float:
     """
-    Gebühren pro Leg. fee_cfg (optional):
-      - maker_bps / taker_bps (in bps; Rebates → negative Werte)
-      - maker_per_share / taker_per_share (Währung/Aktie)
-    Rückgabe: signierte Kosten (Kosten ≤ 0; Rebate ≥ 0).
+    Fees per leg. fee_cfg (optional):
+      - maker_bps / taker_bps (in bps; rebates -> negative values)
+      - maker_per_share / taker_per_share (currency/share)
+    Returns: signed costs (costs <= 0; rebates >= 0).
     """
     role = "maker" if is_maker else "taker"
     bps = float(_coalesce(fee_cfg.get(f"{role}_bps"), 0.0))
@@ -587,9 +587,9 @@ def _borrow_for_row(
     row: pd.Series, *, bps_annual: float, day_basis: int = 365, short_only: bool = False
 ) -> float:
     """
-    Borrow-Accrual (≤ 0).
-    Falls short_only=False → auf Bruttonotional; sonst nur auf Short-Notional (aus Seite).
-    Erwartet entry_date/exit_date; nutzt exec_entry_vwap_* bzw. entry_* / px/py.
+    Borrow accrual (<= 0).
+    If short_only=False, apply it to gross notional; otherwise only to short notional (by side).
+    Expects entry_date/exit_date and uses exec_entry_vwap_* or entry_* / px/py.
     """
     try:
         d0 = pd.Timestamp(row["entry_date"]).normalize()
@@ -628,7 +628,7 @@ def _borrow_for_row(
 
 
 # =============================================================================
-#  Vektorisiertes Gebühren-API (Maker/Taker-Rebates, Tiers, Auction-Fees)
+#  Vectorized fee API (maker/taker rebates, tiers, auction fees)
 # =============================================================================
 
 
@@ -672,7 +672,7 @@ class VenueFeeProfile(TypedDict, total=False):
 
 class FeeSchedule(TypedDict, total=False):
     venues: dict[str, VenueFeeProfile]
-    # Optional: globale Aufschläge (z.B. Broker/Clearing), werden additiv zu venue-bps/per-share gerechnet
+    # Optional: global surcharges (e.g. broker/clearing), added to venue-bps/per-share
     global_bps: float
     global_per_share: float
     global_commission_per_share: float
@@ -692,9 +692,9 @@ def _pick_tier(
     values: np.ndarray, tiers: list[_FeeTier], metric: str
 ) -> tuple[np.ndarray, np.ndarray]:
     """
-    Liefert vektorisiert (bps, per_share) je Row anhand von tiers und gegebener Kennzahl.
-    - Step-Funktion: wählt die höchste Stufe mit thresh <= value.
-    - Fehlende Felder in Tier -> ignorieren (None).
+    Returns vectorized (bps, per_share) per row based on tiers and the given metric.
+    - Step function: chooses the highest tier with thresh <= value.
+    - Missing fields in a tier -> ignore (None).
     """
     if not tiers:
         return (
@@ -720,17 +720,17 @@ def _pick_tier(
 
     eff_bps = bps_arr[idx]
     eff_ps = ps_arr[idx]
-    # Falls ein Tier None enthält → NaN bleibt stehen; der Aufrufer mischt Basiswerte und Tierwerte
+    # If a tier contains None -> NaN remains; the caller mixes base values and tier values
     return eff_bps, eff_ps
 
 
 def normalize_fee_schedule_from_cfg(cfg: Mapping[str, Any]) -> FeeSchedule:
     """
-    Extrahiert ein robustes Gebührenschema aus dem YAML:
+    Extracts a robust fee schedule from the YAML:
       - venues.<VID>.fees.*   (+ Alias maker_rebate_bs → maker_rebate_bps)
-      - execution.fees.default / venue_overrides als Fallback
-      - execution.fallback.fees als globaler Rückfall
-      - auctions.* und costs.* als globale Zusätze
+      - execution.fees.default / venue_overrides as fallback
+      - execution.fallback.fees as global fallback
+      - auctions.* and costs.* as global add-ons
     """
     venues_cfg = cast(Mapping[str, Any], (cfg.get("venues") or {}))
     execution_cfg = cast(Mapping[str, Any], (cfg.get("execution") or {}))
@@ -745,7 +745,7 @@ def normalize_fee_schedule_from_cfg(cfg: Mapping[str, Any]) -> FeeSchedule:
 
     out: dict[str, VenueFeeProfile] = {}
 
-    # globale Zusätze (Broker-Aufschläge etc.)
+    # global add-ons (broker surcharges, etc.)
     spec = resolve_execution_cost_spec(cfg)
     global_bps = _as_float(
         spec.fee_bps if spec.mode == "light" and spec.enabled else 0.0, 0.0
@@ -911,15 +911,15 @@ def compute_costs(
     auction_flags: Mapping[str, Any] | None = None,
 ) -> pd.DataFrame:
     """
-    Vektorisiertes Gebühren-API für venue-/child-granulare Fills.
+    Vectorized fee API for venue-/child-granular fills.
 
-    Rückgabe-Spalten:
-      - fee             (signiert, Kosten ≤ 0, Rebates ≥ 0)  [inkl. Auction-Overrides]
-      - fees            (Alias von 'fee' für Downstream-Konsistenz)
-      - auctions_cost   (nur der inkrementelle Auction-Anteil; ≤ 0)
-      - slippage_cost   (falls nicht vorhanden → 0)
-      - impact_cost     (falls nicht vorhanden → 0)
-      - borrow_cost     (immer 0 – Borrow wird außerhalb gerechnet)
+    Return columns:
+      - fee             (signed, costs <= 0, rebates >= 0)  [including auction overrides]
+      - fees            (alias of 'fee' for downstream consistency)
+      - auctions_cost   (only the incremental auction component; <= 0)
+      - slippage_cost   (if not present -> 0)
+      - impact_cost     (if not present -> 0)
+      - borrow_cost     (always 0 - borrow is computed elsewhere)
       - total_costs     (= fee + slippage_cost + impact_cost)
       - diagnostics: 'blended_bps','per_share_eff','auction_applied','fee_bps_equiv'
     """
@@ -1212,22 +1212,22 @@ def compute_costs(
     )  # mit  Auction-Override
     auctions_cost = (
         fee_cash - fee_cash_base
-    )  # rein inkrementeller Auction-Anteil (≤ 0 oder 0)
+    )  # purely incremental auction component (<= 0 or 0)
 
-    # Caps deckeln NUR Kosten (negativ). Rebates (positiv) NICHT deckeln.
+    # Caps limit ONLY costs (negative). Do NOT cap rebates (positive).
     have_cost = fee_cash < 0.0
-    # Min-Fee (Floor): nicht „über“ -min_fee hinaus
+    # Min fee (floor): not "above" -min_fee
     fee_cash = np.where(
         np.logical_and(have_cost, cap_min > 0.0),
         np.maximum(fee_cash, -np.abs(cap_min)),
         fee_cash,
     )
-    # Max-Fee (Ceiling): nicht „unter“ -max_fee hinaus
+    # Max fee (ceiling): not "below" -max_fee
     fee_cash = np.where(
         np.logical_and(have_cost, cap_max > 0.0),
         np.maximum(
             fee_cash, -np.abs(cap_max)
-        ),  # <-- BUGFIX: vorher fälschlich np.minimum(...)
+        ),  # <-- BUGFIX: previously used np.minimum(...) incorrectly
         fee_cash,
     )
 
@@ -1245,7 +1245,7 @@ def compute_costs(
 
     borrow_cost = np.zeros(
         n, dtype=float
-    )  # hier explizit 0 (globaler Borrow liegt außerhalb)
+    )  # explicitly 0 here (global borrow is handled elsewhere)
 
     total = fee_cash + slip + imp
 
@@ -1256,7 +1256,7 @@ def compute_costs(
     out = pd.DataFrame(
         {
             "fee": fee_cash.astype(float),
-            "fees": fee_cash.astype(float),  # Alias für Downstream (TCA-Parität)
+            "fees": fee_cash.astype(float),  # alias for downstream (TCA parity)
             "auctions_cost": auctions_cost.astype(float),
             "slippage_cost": slip.astype(float),
             "impact_cost": imp.astype(float),
@@ -1277,7 +1277,7 @@ def compute_costs(
 
 
 # =============================================================================
-# Post-LOB Kosten (Fees + Borrow) mit optionalem Explain-Split
+# Post-LOB costs (fees + borrow) with optional explain split
 # =============================================================================
 
 
@@ -1285,17 +1285,17 @@ def compute_post_lob_costs(
     trades_df: pd.DataFrame, cfg: Mapping[str, Any]
 ) -> pd.DataFrame:
     """
-    Admin-Kosten *nach* LOB/VWAP-Ausführung.
-    Gibt DataFrame mit ["fees","fees_entry","fees_exit","borrow_cost","slippage_cost","impact_cost","total_costs"] zurück.
-    Alle Kosten sind signiert:
-      - Kosten ≤ 0
-      - Rebates ≥ 0
+    Admin costs *after* LOB/VWAP execution.
+    Returns a DataFrame with ["fees","fees_entry","fees_exit","borrow_cost","slippage_cost","impact_cost","total_costs"].
+    All costs are signed:
+      - costs <= 0
+      - rebates >= 0
 
     Single-source-of-truth policy in this codebase:
-      - Borrow wird NICHT hier gerechnet (BorrowContext in der Engine).
-      - Slippage/Impact werden NICHT hier gerechnet (LOB annotator).
-      - Diese Funktion liefert ausschließlich Fees (auf Entry-Notional), plus 0-Spalten
-        für die anderen Komponenten zur Kompatibilität.
+      - Borrow is NOT computed here (BorrowContext in the engine).
+      - Slippage/impact are NOT computed here (LOB annotator).
+      - This function returns fees only (on entry notional), plus zero columns
+        for the other components for compatibility.
     """
     if trades_df is None or trades_df.empty:
         return pd.DataFrame(
@@ -1414,7 +1414,7 @@ def compute_post_lob_costs(
         f_exit = float(fy1 + fx1 + per_trade_exit)
         f_total = float(f_entry + f_exit)
 
-        # Floor/Cap nur auf Kosten (nicht auf Rebates)
+        # Apply floor/cap only to costs (not rebates)
         min_fee = float(fee_cfg.get("min_fee", 0.0) or 0.0)
         if min_fee > 0 and f_total < 0:
             f_total = min(f_total, -abs(min_fee))
@@ -1466,7 +1466,7 @@ __all__ = [
     "SimulationResult",
     # Legacy & post-trade
     "compute_post_lob_costs",
-    # Neues vektorisiertes Gebühren-API
+    # New vectorized fee API
     "normalize_fee_schedule_from_cfg",
     "compute_costs",
     # Types (optional export)

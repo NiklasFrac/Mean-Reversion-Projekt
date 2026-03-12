@@ -32,7 +32,7 @@ def test_end_to_end(tmp_path, tmp_prices_file, monkeypatch):
     }
     out = main(cfg_path=None, quick=False, overrides=cfg)
     assert out is not None
-    # Artefakte prüfen
+    # Check artifacts
     meta_path = Path(cfg["data"]["pairs_path"]).with_suffix(".meta.json")
     assert meta_path.exists()
     meta = json.loads(meta_path.read_text(encoding="utf-8"))

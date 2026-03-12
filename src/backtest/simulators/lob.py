@@ -308,6 +308,82 @@ def _maker_price(
     return float(px) if px is not None and np.isfinite(px) and px > 0 else None
 
 
+def _same_side_top_depth(ob: OrderBook, side: str) -> int:
+    try:
+        if str(side).lower() == "buy" and ob.bids:
+            return int(max(0, int(ob.bids[0].total_size)))
+        if str(side).lower() == "sell" and ob.asks:
+            return int(max(0, int(ob.asks[0].total_size)))
+    except Exception:
+        pass
+    return 0
+
+
+def _normalize_fills(fills: Any) -> list[tuple[float, int]]:
+    out: list[tuple[float, int]] = []
+    try:
+        items = list(fills or [])
+    except Exception:
+        items = []
+    for item in items:
+        try:
+            px_raw, qty_raw = item
+        except Exception:
+            continue
+        px = _safe_float(px_raw, default=float("nan"))
+        qty = _safe_int(qty_raw, default=0)
+        if np.isfinite(px) and px > 0.0 and qty > 0:
+            out.append((float(px), int(qty)))
+    return out
+
+
+def _fills_vwap(fills: Any) -> tuple[int, float | None]:
+    norm = _normalize_fills(fills)
+    if not norm:
+        return 0, None
+    filled = int(sum(int(qty) for _, qty in norm))
+    if filled <= 0:
+        return 0, None
+    notional = float(sum(float(px) * float(qty) for px, qty in norm))
+    return int(filled), float(notional / float(filled))
+
+
+def _maker_turnover_target(
+    ob: OrderBook,
+    *,
+    qty: int,
+    top_depth: int,
+    maker_max_top_frac: float,
+    steps_per_day: int,
+    aggr_prob: float,
+    aggr_max_frac: float,
+) -> int:
+    req = int(max(0, qty))
+    if req <= 0:
+        return 0
+    top_now = int(max(1, top_depth))
+    maker_base = float(top_now) * float(max(0.05, maker_max_top_frac))
+    maker_stress = (
+        float(top_now)
+        * float(max(0.0, aggr_prob))
+        * float(max(0.0, aggr_max_frac))
+        * float(max(1, steps_per_day))
+    )
+    turnover_cap = float(max(1.0, maker_base + maker_stress))
+    coverage = float(min(1.0, turnover_cap / float(max(1, req))))
+    fill_mean = float(max(0.05, min(0.90, 0.25 + 0.55 * coverage)))
+    fill_frac = fill_mean
+    if getattr(ob, "_global_seed", None) is not None:
+        kappa = float(8.0 + 10.0 * coverage)
+        mu_c = float(max(1e-6, min(1.0 - 1e-6, fill_mean)))
+        try:
+            fill_frac = float(ob.rng.beta(mu_c * kappa, (1.0 - mu_c) * kappa))
+        except Exception:
+            fill_frac = fill_mean
+    target = int(round(float(turnover_cap) * float(max(0.0, min(1.0, fill_frac)))))
+    return int(max(0, min(req, target)))
+
+
 def _pick_vwap(rep: Mapping[str, Any]) -> float | None:
     for key in ("vwap", "avg_price"):
         val = rep.get(key, None)
@@ -331,6 +407,7 @@ def _exec_order(
     flow_cfg: Mapping[str, Any] | None,
     is_short: bool,
     maker_touch_mult: float = 1.0,
+    maker_state: Mapping[str, Any] | None = None,
 ) -> dict[str, Any]:
     if qty <= 0:
         return {
@@ -357,6 +434,7 @@ def _exec_order(
     maker_touch_prob = float(max(0.0, min(1.0, maker_touch_prob * maker_touch_mult)))
 
     use_maker = False
+    top_depth = 0
     if mode == "maker":
         use_maker = True
     elif mode == "mixed":
@@ -368,13 +446,9 @@ def _exec_order(
     limit_px = _maker_price(ob, cfg, side=side, mid=mid) if use_maker else None
     if use_maker and limit_px is not None:
         try:
+            top_depth = _same_side_top_depth(ob, side)
             if maker_max_top_frac > 0:
-                if side == "buy" and ob.bids:
-                    top = int(ob.bids[0].total_size)
-                elif side == "sell" and ob.asks:
-                    top = int(ob.asks[0].total_size)
-                else:
-                    top = 0
+                top = int(max(0, top_depth))
                 if top > 0 and qty > int(max(1, round(float(top) * maker_max_top_frac))):
                     use_maker = False
         except Exception:
@@ -398,20 +472,174 @@ def _exec_order(
     if use_maker and limit_px is not None:
         pre_bb = ob.best_bid()
         pre_ba = ob.best_ask()
-        return {
-            "filled_size": int(qty),
-            "avg_price": float(limit_px),
-            "vwap": float(limit_px),
-            "signed_slippage": 0.0,
-            "slippage_ticks": 0.0,
-            "unfilled_size": 0,
-            "fills": [(float(limit_px), int(qty))],
-            "pre_best_bid": pre_bb,
-            "pre_best_ask": pre_ba,
-            "post_best_bid": pre_bb,
-            "post_best_ask": pre_ba,
-            "role": "maker",
-        }
+        state = dict(maker_state or {})
+        steps_per_day = max(1, _safe_int(state.get("steps_per_day", 1), 1))
+        oid = 0
+        try:
+            post_rep = ob.process_limit_order(
+                side=side,
+                price=float(limit_px),
+                size=int(qty),
+                tif="gtc",
+                post_only=True,
+                po_action="slide",
+                owner="lob-maker",
+                symbol=symbol,
+                is_short=bool(is_short),
+            )
+            oid = _safe_int(post_rep.get("resting_oid"), 0)
+        except Exception:
+            oid = 0
+
+        if oid > 0:
+            for _ in range(max(0, steps_per_day - 1)):
+                ob.step(
+                    lam=float(state.get("lam", 0.0) or 0.0),
+                    max_add=int(max(2, _safe_int(state.get("max_add", 0), 0))),
+                    bias_top=float(state.get("bias_top", 0.7) or 0.7),
+                    cancel_prob=float(state.get("cancel_prob", 0.0) or 0.0),
+                    max_cancel=int(
+                        max(1, _safe_int(state.get("max_cancel", 1), 1))
+                    ),
+                    aggr_prob=0.0,
+                    aggr_max=0,
+                )
+
+            pos = ob.order_position(oid) or {}
+            qty_ahead = max(0, _safe_int(pos.get("qty_ahead", 0), 0))
+            top_now = int(
+                max(
+                    1,
+                    top_depth,
+                    _safe_int(state.get("_liq_depth_top", 1), 1),
+                )
+            )
+            maker_target = _maker_turnover_target(
+                ob,
+                qty=int(qty),
+                top_depth=int(top_now),
+                maker_max_top_frac=float(maker_max_top_frac),
+                steps_per_day=int(steps_per_day),
+                aggr_prob=float(
+                    max(0.0, min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0)))
+                ),
+                aggr_max_frac=float(
+                    max(
+                        0.0,
+                        _safe_float(state.get("_stress_aggr_max_frac", 0.0), 0.0),
+                    )
+                ),
+            )
+            if maker_target > 0:
+                contra_side = "sell" if side == "buy" else "buy"
+                try:
+                    ob.process_market_order(
+                        side=contra_side,
+                        size=int(max(1, qty_ahead + maker_target)),
+                        tif="ioc",
+                        symbol=symbol,
+                        is_short=False,
+                    )
+                except Exception:
+                    pass
+
+        maker_fills = _normalize_fills(ob.collect_fills_for_oid(oid) if oid > 0 else [])
+        maker_filled, maker_avg = _fills_vwap(maker_fills)
+        _ = ob.order_position(oid) if oid > 0 else None
+        residual = int(max(0, qty - maker_filled))
+        if oid > 0 and residual > 0:
+            try:
+                ob.cancel_order(oid)
+            except Exception:
+                pass
+
+        if residual <= 0 and maker_filled > 0 and maker_avg is not None:
+            post_bb = ob.best_bid()
+            post_ba = ob.best_ask()
+            return {
+                "filled_size": int(maker_filled),
+                "avg_price": float(maker_avg),
+                "vwap": float(maker_avg),
+                "signed_slippage": 0.0,
+                "slippage_ticks": 0.0,
+                "unfilled_size": 0,
+                "fills": maker_fills,
+                "pre_best_bid": pre_bb,
+                "pre_best_ask": pre_ba,
+                "post_best_bid": post_bb,
+                "post_best_ask": post_ba,
+                "role": "maker",
+                "maker_filled_size": int(maker_filled),
+                "taker_filled_size": 0,
+                "spread_cost_cash": 0.0,
+                "impact_cost_cash": 0.0,
+            }
+
+        if residual > 0 and not fallback_to_taker:
+            post_bb = ob.best_bid()
+            post_ba = ob.best_ask()
+            return {
+                "filled_size": int(maker_filled),
+                "avg_price": float(maker_avg) if maker_avg is not None else None,
+                "vwap": float(maker_avg) if maker_avg is not None else None,
+                "signed_slippage": 0.0,
+                "slippage_ticks": 0.0,
+                "unfilled_size": int(residual),
+                "fills": maker_fills,
+                "pre_best_bid": pre_bb,
+                "pre_best_ask": pre_ba,
+                "post_best_bid": post_bb,
+                "post_best_ask": post_ba,
+                "role": "maker" if maker_filled > 0 else "blocked",
+                "maker_filled_size": int(maker_filled),
+                "taker_filled_size": 0,
+                "spread_cost_cash": 0.0,
+                "impact_cost_cash": 0.0,
+            }
+
+        if residual > 0:
+            taker_rep = ob.process_market_order(
+                side=side,
+                size=int(residual),
+                tif="ioc",
+                symbol=symbol,
+                is_short=bool(is_short),
+            )
+            taker_fills = _normalize_fills(taker_rep.get("fills", []))
+            taker_filled, _ = _fills_vwap(taker_fills)
+            filled_total = int(maker_filled + taker_filled)
+            fills_total = maker_fills + taker_fills
+            _, avg_total = _fills_vwap(fills_total)
+            taker_slip, taker_imp = _slip_decomp(taker_rep, side, ref_mid=mid)
+            signed_slippage = float(
+                _safe_float(taker_rep.get("signed_slippage", 0.0), 0.0)
+            )
+            signed_slippage = (
+                float(signed_slippage) * float(taker_filled) / float(filled_total)
+                if filled_total > 0 and taker_filled > 0
+                else 0.0
+            )
+            return {
+                "filled_size": int(filled_total),
+                "avg_price": float(avg_total) if avg_total is not None else None,
+                "vwap": float(avg_total) if avg_total is not None else None,
+                "signed_slippage": float(signed_slippage),
+                "slippage_ticks": float(signed_slippage / ob.tick) if ob.tick > 0 else 0.0,
+                "unfilled_size": int(max(0, qty - filled_total)),
+                "fills": fills_total,
+                "pre_best_bid": pre_bb,
+                "pre_best_ask": pre_ba,
+                "post_best_bid": taker_rep.get("post_best_bid", ob.best_bid()),
+                "post_best_ask": taker_rep.get("post_best_ask", ob.best_ask()),
+                "role": "taker",
+                "role_detail": "maker_partial_taker"
+                if maker_filled > 0
+                else "maker_fallback_taker",
+                "maker_filled_size": int(maker_filled),
+                "taker_filled_size": int(taker_filled),
+                "spread_cost_cash": float(taker_slip),
+                "impact_cost_cash": float(taker_imp),
+            }
 
     if mode == "maker" and not fallback_to_taker:
         return {
@@ -441,6 +669,10 @@ def _exec_order(
 def _slip_decomp(
     rep: Mapping[str, Any], side: str, *, ref_mid: float | None
 ) -> tuple[float, float]:
+    spread_cash = _safe_float(rep.get("spread_cost_cash"), default=float("nan"))
+    impact_cash = _safe_float(rep.get("impact_cost_cash"), default=float("nan"))
+    if np.isfinite(spread_cash) and np.isfinite(impact_cash):
+        return float(spread_cash), float(impact_cash)
     try:
         filled = int(rep.get("filled_size") or 0)
     except Exception:
@@ -574,7 +806,7 @@ def _pair_fill_fraction(
             0.0,
         )
     )
-    fill_frac, diag = sample_package_fill_fraction(
+    sampled_fill, diag = sample_package_fill_fraction(
         cfg=fill_cfg,
         seed=seed,
         shard_id=int(shard_id),
@@ -585,17 +817,198 @@ def _pair_fill_fraction(
         participation_usd=participation_usd,
         sigma_pair=sigma_pair,
     )
+    base_fill = float(sampled_fill)
     fill_mult = float(
         min(
             y_state.get("_stress_fill_mean_mult", 1.0),
             x_state.get("_stress_fill_mean_mult", 1.0),
         )
     )
-    eff_fill = float(max(0.0, min(1.0, float(fill_frac) * fill_mult)))
+    eff_fill = float(max(0.0, min(1.0, float(base_fill) * fill_mult)))
     eff_expected = float(
         max(0.0, min(1.0, float(diag.get("expected", 1.0)) * fill_mult))
     )
     return eff_fill, eff_expected, y_state, x_state, pair_regime
+
+
+def _regime_rank(regime: str) -> int:
+    table = {"normal": 0, "elevated": 1, "stress": 2, "panic": 3}
+    return int(table.get(str(regime or "").strip().lower(), 0))
+
+
+def _worse_regime(*regimes: str) -> str:
+    best = "normal"
+    best_rank = -1
+    for regime in regimes:
+        rank = _regime_rank(str(regime))
+        if rank > best_rank:
+            best = str(regime or "normal").strip().lower() or "normal"
+            best_rank = rank
+    return best
+
+
+def _effective_exit_grace_days(max_days: int, regime: str) -> int:
+    max_days_i = max(0, int(max_days))
+    shrink = {
+        "normal": 0,
+        "elevated": 0,
+        "stress": 1,
+        "panic": max_days_i,
+    }
+    return int(max(0, max_days_i - int(shrink.get(str(regime).lower(), 0))))
+
+
+def _panic_cross_bps_for_regime(base_bps: float, regime: str) -> float:
+    mult = {
+        "normal": 1.0,
+        "elevated": 1.5,
+        "stress": 2.5,
+        "panic": 5.0,
+    }
+    return float(max(0.0, float(base_bps)) * float(mult.get(str(regime).lower(), 1.0)))
+
+
+def _leg_package_capacity_shares(
+    *,
+    qty_abs: int,
+    state: Mapping[str, Any],
+    flow_cfg: Mapping[str, Any] | None,
+    fill_frac: float,
+    steps_per_day: int,
+    exit_capacity_mult: float,
+) -> float:
+    if int(qty_abs) <= 0:
+        return 0.0
+
+    level_sizes_raw = list(state.get("level_sizes") or [])
+    level_sizes: list[float] = []
+    for val in level_sizes_raw:
+        try:
+            fval = float(val)
+        except Exception:
+            continue
+        if np.isfinite(fval) and fval > 0.0:
+            level_sizes.append(float(fval))
+
+    top_depth = (
+        float(level_sizes[0])
+        if level_sizes
+        else max(1.0, float(state.get("_liq_depth_top", 1.0) or 1.0))
+    )
+    visible_depth = (
+        float(sum(level_sizes))
+        if level_sizes
+        else max(top_depth, top_depth * float(max(1, steps_per_day)))
+    )
+    flow = dict(flow_cfg or {})
+    mode = _flow_mode(flow)
+    fallback_to_taker = bool(flow.get("fallback_to_taker", True))
+    fill_cap = float(max(0.0, min(1.0, float(fill_frac))))
+    exit_mult = float(max(0.0, float(exit_capacity_mult)))
+    stress_cap_mult = {
+        "normal": 1.0,
+        "elevated": 0.9,
+        "stress": 0.65,
+        "panic": 0.35,
+    }.get(str(state.get("_stress_regime", "normal")).lower(), 1.0)
+    cap_mult = float(exit_mult) * float(stress_cap_mult)
+
+    taker_cap = float(visible_depth) * (0.10 + 0.90 * fill_cap) * cap_mult
+    taker_cap = max(float(top_depth) * 0.25 * max(1.0, cap_mult), taker_cap)
+    adv_usd = _safe_float(state.get("_liq_adv_usd", np.nan), float("nan"))
+    ref_px = _safe_float(state.get("_liq_px", np.nan), float("nan"))
+    if np.isfinite(adv_usd) and adv_usd > 0.0 and np.isfinite(ref_px) and ref_px > 0.0:
+        adv_shares = float(adv_usd) / float(ref_px)
+        adv_participation = 0.01 + 0.015 * fill_cap
+        adv_cap = float(adv_shares) * float(adv_participation) * cap_mult
+        taker_cap = max(taker_cap, adv_cap)
+
+    maker_touch = float(
+        max(
+            0.0,
+            min(
+                1.0,
+                _safe_float(flow.get("maker_touch_prob", 1.0), 1.0)
+                * _safe_float(state.get("_stress_maker_touch_mult", 1.0), 1.0),
+            ),
+        )
+    )
+    maker_top_frac = float(max(0.0, _safe_float(flow.get("maker_max_top_frac", 0.25), 0.25)))
+    aggr_prob = float(max(0.0, min(1.0, _safe_float(state.get("_stress_aggr_prob", 0.0), 0.0))))
+    aggr_max_frac = float(max(0.0, _safe_float(state.get("_stress_aggr_max_frac", 0.0), 0.0)))
+    maker_turnover = (
+        float(top_depth) * maker_top_frac
+        + float(top_depth) * aggr_prob * aggr_max_frac * float(max(1, steps_per_day))
+    )
+    maker_cap = maker_touch * maker_turnover * max(0.25, fill_cap)
+
+    if mode == "maker":
+        cap = maker_cap if not fallback_to_taker else max(maker_cap, taker_cap)
+    elif mode == "mixed":
+        cap = max(maker_cap, taker_cap)
+    else:
+        cap = taker_cap
+    return float(max(0.0, cap))
+
+
+def _pair_package_capacity(
+    *,
+    y_qty_abs: int,
+    x_qty_abs: int,
+    y_state: Mapping[str, Any],
+    x_state: Mapping[str, Any],
+    flow_cfg: Mapping[str, Any] | None,
+    fill_frac: float,
+    base_book_params: Mapping[str, Any],
+    exit_capacity_mult: float = 1.0,
+) -> tuple[float, float, float]:
+    steps_per_day = max(1, _safe_int(base_book_params.get("steps_per_day", 4), 4))
+    cap_y = _leg_package_capacity_shares(
+        qty_abs=int(y_qty_abs),
+        state=y_state,
+        flow_cfg=flow_cfg,
+        fill_frac=fill_frac,
+        steps_per_day=steps_per_day,
+        exit_capacity_mult=exit_capacity_mult,
+    )
+    cap_x = _leg_package_capacity_shares(
+        qty_abs=int(x_qty_abs),
+        state=x_state,
+        flow_cfg=flow_cfg,
+        fill_frac=fill_frac,
+        steps_per_day=steps_per_day,
+        exit_capacity_mult=exit_capacity_mult,
+    )
+    frac_y = float("inf") if int(y_qty_abs) <= 0 else float(cap_y) / float(max(1, int(y_qty_abs)))
+    frac_x = float("inf") if int(x_qty_abs) <= 0 else float(cap_x) / float(max(1, int(x_qty_abs)))
+    pair_frac = float(min(frac_y, frac_x))
+    if not np.isfinite(pair_frac):
+        pair_frac = 1.0
+    return float(max(0.0, min(1.0, pair_frac))), float(cap_y), float(cap_x)
+
+
+def _emergency_penalty_cost(
+    *,
+    residual_y: int,
+    residual_x: int,
+    y_force_px: float,
+    x_force_px: float,
+    planned_y_units: int,
+    planned_x_units: int,
+    panic_cross_bps: float,
+) -> float:
+    qty_y = max(0, int(residual_y))
+    qty_x = max(0, int(residual_x))
+    if qty_y <= 0 and qty_x <= 0:
+        return 0.0
+    planned_y = max(1, abs(int(planned_y_units)))
+    planned_x = max(1, abs(int(planned_x_units)))
+    residual_frac = float(
+        max(float(qty_y) / float(planned_y), float(qty_x) / float(planned_x))
+    )
+    force_notional = float(abs(float(y_force_px)) * float(qty_y) + abs(float(x_force_px)) * float(qty_x))
+    extra_bps = float(max(0.0, float(panic_cross_bps)) * residual_frac * 0.10)
+    return float(-force_notional * extra_bps / 10_000.0)
 
 
 def _current_volume_at(
@@ -760,6 +1173,7 @@ def _exec_one_leg(
         flow_cfg=order_flow_entry,
         is_short=bool(units < 0),
         maker_touch_mult=float(params_entry.get("_stress_maker_touch_mult", 1.0)),
+        maker_state=params_entry,
     )
     fill0 = int(rep0.get("filled_size") or 0)
     unfill0 = int(rep0.get("unfilled_size") or max(0, req - fill0))
@@ -816,6 +1230,7 @@ def _exec_one_leg(
         flow_cfg=order_flow_exit,
         is_short=False,
         maker_touch_mult=float(params_exit.get("_stress_maker_touch_mult", 1.0)),
+        maker_state=params_exit,
     )
     fill1 = int(rep1.get("filled_size") or 0)
     unfill1 = int(rep1.get("unfilled_size") or max(0, req - fill1))
@@ -1044,11 +1459,17 @@ def _simulate_trade_row(
         ):
             continue
 
-        gate_ok = True
-        if fill_cfg.enabled and liq_model is not None:
-            gate_rng = _seeded_rng(seed, row_ord, 1000 + attempt_idx)
-            gate_ok = bool(gate_rng.random() <= max(0.0, min(1.0, fill_frac)))
-        if not gate_ok:
+        cap_pair_frac, _, _ = _pair_package_capacity(
+            y_qty_abs=abs(y_units),
+            x_qty_abs=abs(x_units),
+            y_state=y_state,
+            x_state=x_state,
+            flow_cfg=order_flow_entry,
+            fill_frac=fill_frac,
+            base_book_params=book_params,
+            exit_capacity_mult=1.0,
+        )
+        if cap_pair_frac < 1.0:
             continue
 
         ob_y_try = _make_book(float(py_mid), y_state, row_ord * 2 + 0)
@@ -1065,6 +1486,7 @@ def _simulate_trade_row(
             flow_cfg=order_flow_entry,
             is_short=bool(y_units < 0),
             maker_touch_mult=float(y_state.get("_stress_maker_touch_mult", 1.0)),
+            maker_state=y_state,
         )
         rep_x = _exec_order(
             ob_x_try,
@@ -1077,6 +1499,7 @@ def _simulate_trade_row(
             flow_cfg=order_flow_entry,
             is_short=bool(x_units < 0),
             maker_touch_mult=float(x_state.get("_stress_maker_touch_mult", 1.0)),
+            maker_state=x_state,
         )
         if not (_full_fill(rep_y, abs(y_units)) and _full_fill(rep_x, abs(x_units))):
             continue
@@ -1214,6 +1637,40 @@ def _simulate_trade_row(
         default_out["exec_reject_reason"] = "missing_exit_session"
         return default_out
 
+    exit_regime_seed = "normal"
+    for exit_day in exit_candidates:
+        py_mid = _mid_at(y_series, pd.Timestamp(exit_day))
+        px_mid = _mid_at(x_series, pd.Timestamp(exit_day))
+        if py_mid is None or px_mid is None:
+            continue
+        exit_state_y0 = _state_for_symbol(
+            liq_model=liq_model,
+            symbol=y_sym,
+            ts=pd.Timestamp(exit_day),
+            base_book_params=book_params,
+            mid_hint=float(py_mid),
+        )
+        exit_state_x0 = _state_for_symbol(
+            liq_model=liq_model,
+            symbol=x_sym,
+            ts=pd.Timestamp(exit_day),
+            base_book_params=book_params,
+            mid_hint=float(px_mid),
+        )
+        exit_regime_seed = _worse_regime(
+            str(exit_state_y0.get("_stress_regime", "normal")),
+            str(exit_state_x0.get("_stress_regime", "normal")),
+        )
+        break
+    exit_grace_days_eff = _effective_exit_grace_days(
+        max_exit_grace_days, exit_regime_seed
+    )
+    exit_candidates = exit_candidates[: int(exit_grace_days_eff) + 1]
+    if not exit_candidates:
+        default_out["exec_rejected"] = True
+        default_out["exec_reject_reason"] = "missing_exit_session"
+        return default_out
+
     residual_y = abs(int(y_units))
     residual_x = abs(int(x_units))
     current_day = pd.Timestamp(actual_entry)
@@ -1227,6 +1684,7 @@ def _simulate_trade_row(
     exit_role_y = "blocked"
     exit_role_x = "blocked"
     forced_exit = False
+    exit_regime_worst = str(exit_regime_seed)
 
     for attempt_idx, exit_day in enumerate(exit_candidates):
         days_to_step = [
@@ -1288,7 +1746,8 @@ def _simulate_trade_row(
             seed=seed,
             shard_id=int(row_ord * 64 + attempt_idx * 4 + 2),
         )
-        default_out["lob_regime_exit"] = str(pair_regime)
+        exit_regime_worst = _worse_regime(exit_regime_worst, str(pair_regime))
+        default_out["lob_regime_exit"] = str(exit_regime_worst)
 
         vol_y = _current_volume_at(
             y_sym, current_day, volume_panel=volume_panel, liq_model=liq_model
@@ -1307,26 +1766,38 @@ def _simulate_trade_row(
             if is_grace
             else dict(order_flow_exit)
         )
-        attempt_frac = 1.0
-        if fill_cfg.enabled and liq_model is not None:
-            attempt_frac = float(max(0.0, min(1.0, fill_frac)))
+        exit_capacity_mult = {
+            "normal": 1.0,
+            "elevated": 0.8,
+            "stress": 0.55,
+            "panic": 0.25,
+        }.get(str(pair_regime).lower(), 1.0)
+        attempt_frac, _, _ = _pair_package_capacity(
+            y_qty_abs=residual_y,
+            x_qty_abs=residual_x,
+            y_state=state_y,
+            x_state=state_x,
+            flow_cfg=flow_exit_use,
+            fill_frac=fill_frac,
+            base_book_params=book_params,
+            exit_capacity_mult=float(exit_capacity_mult),
+        )
         qty_try_y = residual_y
         qty_try_x = residual_x
-        if fill_cfg.enabled and liq_model is not None:
-            if attempt_frac <= 0.0:
-                qty_try_y = 0
-                qty_try_x = 0
-            else:
-                qty_try_y = (
-                    max(1, int(np.floor(float(residual_y) * attempt_frac + 1e-12)))
-                    if residual_y > 0
-                    else 0
-                )
-                qty_try_x = (
-                    max(1, int(np.floor(float(residual_x) * attempt_frac + 1e-12)))
-                    if residual_x > 0
-                    else 0
-                )
+        if attempt_frac <= 0.0:
+            qty_try_y = 0
+            qty_try_x = 0
+        else:
+            qty_try_y = (
+                max(1, int(np.floor(float(residual_y) * attempt_frac + 1e-12)))
+                if residual_y > 0
+                else 0
+            )
+            qty_try_x = (
+                max(1, int(np.floor(float(residual_x) * attempt_frac + 1e-12)))
+                if residual_x > 0
+                else 0
+            )
 
         rep_y = _exec_order(
             ob_y,
@@ -1339,6 +1810,7 @@ def _simulate_trade_row(
             flow_cfg=flow_exit_use,
             is_short=False,
             maker_touch_mult=float(state_y.get("_stress_maker_touch_mult", 1.0)),
+            maker_state=state_y,
         )
         rep_x = _exec_order(
             ob_x,
@@ -1351,6 +1823,7 @@ def _simulate_trade_row(
             flow_cfg=flow_exit_use,
             is_short=False,
             maker_touch_mult=float(state_x.get("_stress_maker_touch_mult", 1.0)),
+            maker_state=state_x,
         )
         fill_y = int(rep_y.get("filled_size") or 0)
         fill_x = int(rep_x.get("filled_size") or 0)
@@ -1388,13 +1861,17 @@ def _simulate_trade_row(
 
     if residual_y > 0 or residual_x > 0:
         forced_day = pd.Timestamp(exit_candidates[-1])
+        force_regime = _worse_regime(exit_regime_worst, str(default_out.get("lob_regime_exit", "normal")))
+        force_bps = _panic_cross_bps_for_regime(panic_cross_bps, force_regime)
+        residual_before_force_y = int(residual_y)
+        residual_before_force_x = int(residual_x)
         py_force = _emergency_cross_price(
             symbol=y_sym,
             units=y_units,
             ts=forced_day,
             liq_model=liq_model,
             price_series=y_series,
-            panic_cross_bps=panic_cross_bps,
+            panic_cross_bps=force_bps,
         )
         px_force = _emergency_cross_price(
             symbol=x_sym,
@@ -1402,7 +1879,7 @@ def _simulate_trade_row(
             ts=forced_day,
             liq_model=liq_model,
             price_series=x_series,
-            panic_cross_bps=panic_cross_bps,
+            panic_cross_bps=force_bps,
         )
         if py_force is None or px_force is None:
             default_out["exec_rejected"] = True
@@ -1420,6 +1897,17 @@ def _simulate_trade_row(
             residual_x = 0
         forced_exit = True
         actual_exit = forced_day
+        default_out["exec_emergency_penalty_cost"] = _emergency_penalty_cost(
+            residual_y=residual_before_force_y,
+            residual_x=residual_before_force_x,
+            y_force_px=float(py_force),
+            x_force_px=float(px_force),
+            planned_y_units=int(y_units),
+            planned_x_units=int(x_units),
+            panic_cross_bps=float(force_bps),
+        )
+        default_out["exec_residual_units_y"] = int(residual_before_force_y)
+        default_out["exec_residual_units_x"] = int(residual_before_force_x)
 
     exit_vwap_y = float(exit_cash_y / exit_filled_y) if exit_filled_y > 0 else np.nan
     exit_vwap_x = float(exit_cash_x / exit_filled_x) if exit_filled_x > 0 else np.nan
@@ -1450,8 +1938,9 @@ def _simulate_trade_row(
     default_out["exec_stress_regime_exit"] = str(
         default_out.get("lob_regime_exit", "")
     )
-    default_out["exec_residual_units_y"] = int(residual_y)
-    default_out["exec_residual_units_x"] = int(residual_x)
+    if not forced_exit:
+        default_out["exec_residual_units_y"] = int(residual_y)
+        default_out["exec_residual_units_x"] = int(residual_x)
     default_out["slippage_cost_exit"] = float(exit_slip)
     default_out["impact_cost_exit"] = float(exit_imp)
     default_out["slippage_cost"] = float(default_out["slippage_cost_entry"]) + float(
@@ -1645,9 +2134,20 @@ def annotate_with_lob(
             if col not in df.columns:
                 df[col] = 0.0
 
-    df["lob_net_pnl"] = pd.to_numeric(df["lob_gross_pnl"], errors="coerce").fillna(
-        0.0
-    ) + pd.to_numeric(df["fees"], errors="coerce").fillna(0.0)
+    buyin_penalty = pd.to_numeric(
+        pd.Series(df.get("buyin_penalty_cost", 0.0), index=df.index),
+        errors="coerce",
+    ).fillna(0.0)
+    emergency_penalty = pd.to_numeric(
+        pd.Series(df.get("exec_emergency_penalty_cost", 0.0), index=df.index),
+        errors="coerce",
+    ).fillna(0.0)
+    df["lob_net_pnl"] = (
+        pd.to_numeric(df["lob_gross_pnl"], errors="coerce").fillna(0.0)
+        + pd.to_numeric(df["fees"], errors="coerce").fillna(0.0)
+        + buyin_penalty
+        + emergency_penalty
+    )
     df["gross_pnl"] = pd.to_numeric(df["lob_gross_pnl"], errors="coerce").fillna(0.0)
     df["exec_diag_costs_only"] = True
 

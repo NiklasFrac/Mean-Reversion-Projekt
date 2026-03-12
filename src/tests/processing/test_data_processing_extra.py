@@ -21,25 +21,25 @@ def test_load_raw_prices_from_universe_glob_star_and_missing_volume(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """
-    Deckt zwei Zweige ab:
-      1) Discovery über Pattern 'raw_prices.*.pkl' (Wildcard-Branch).
-      2) Kein Volume vorhanden -> df_volume ist None und used_paths markiert None.
+    Covers two branches:
+      1) Discovery via pattern 'raw_prices.*.pkl' (wildcard branch).
+      2) No volume present -> df_volume is None and used_paths marks None.
     """
     data_dir = tmp_path / "universe"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Wildcard-Variante (soll gefunden werden)
+    # wildcard variant (should be found)
     p_star = data_dir / "raw_prices.20240101.pkl"
     _mk_df(5, 2).to_pickle(p_star)
 
-    # _discover nutzt CWD → ins Datenverzeichnis wechseln und relativ aufrufen
+    # _discover uses CWD -> switch into the data directory and call it relatively
     monkeypatch.chdir(data_dir)
     prices, volume, used = load_raw_prices_from_universe(Path("."))
 
     assert isinstance(prices, pd.DataFrame) and not prices.empty
-    assert volume is None, "Wenn kein raw_volume.* existiert, muss df_volume None sein."
+    assert volume is None, "If no raw_volume.* exists, df_volume must be None."
     assert isinstance(used, dict)
-    # Korrekte Keys im used_paths:
+    # Correct keys in used_paths:
     assert used.get("prices") is not None
     assert used.get("volume") in (None, "")
 
@@ -48,28 +48,28 @@ def test_load_raw_prices_prefers_newest_when_both_exist(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """
-    Wenn sowohl 'raw_prices.pkl' als auch 'raw_prices.*.pkl' existieren,
-    soll der *neuere* Artefakt gewählt werden (Discovery-Strategie).
+    If both 'raw_prices.pkl' and 'raw_prices.*.pkl' exist,
+    the *newer* artifact should be chosen (discovery strategy).
     """
     data_dir = tmp_path / "u"
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Ältere Datei: plain
+    # older file: plain
     p_plain = data_dir / "raw_prices.pkl"
     _mk_df(4, 2).to_pickle(p_plain)
 
-    # Kurze Pause, damit mtime sicher größer wird
+    # short pause so mtime is definitely larger
     time.sleep(0.02)
 
-    # Neuere Datei: Wildcard
+    # newer file: wildcard
     p_star = data_dir / "raw_prices.20240202.pkl"
     _mk_df(4, 3).to_pickle(p_star)
 
-    # Nur die Pfadwahl testen
+    # only test path selection
     monkeypatch.chdir(data_dir)
     prices, volume, used = load_raw_prices_from_universe(Path("."))
 
-    assert prices.shape[1] == 3  # neuere Wildcard-Datei hat 3 Spalten
+    assert prices.shape[1] == 3  # newer wildcard file has 3 columns
     # used['prices'] ist relativ -> Namen vergleichen
     assert used.get("prices") is not None
     assert Path(used["prices"]).name == p_star.name

@@ -10,11 +10,11 @@ import pytest
 def test_cli_success_calls_pipeline_main(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Fake-Config-Datei
+    # fake config file
     cfg = tmp_path / "cfg.yaml"
     cfg.write_text("data: {}\n", encoding="utf-8")
 
-    # Fake processing.pipeline Modul mit main()
+    # fake processing.pipeline module with main()
     fake_mod = types.ModuleType("processing.pipeline")
     called: dict[str, Path] = {}
 
@@ -27,7 +27,7 @@ def test_cli_success_calls_pipeline_main(
     # Import erst NACH dem Stub, damit der from-Import den Stub findet
     from processing.runner_processing import cli  # noqa: WPS433
 
-    # argv patchen und ausführen
+    # patch argv and execute
     monkeypatch.setattr(sys, "argv", ["runner_processing.py", "--cfg", str(cfg)])
     cli()
     assert called["cfg"] == cfg

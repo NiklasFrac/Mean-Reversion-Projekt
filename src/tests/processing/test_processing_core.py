@@ -8,7 +8,7 @@ from processing.processing_primitives import _process_symbol, process_and_fill_p
 
 
 def test__process_symbol_happy_and_outlier_error():
-    # Referenzgitter
+    # Reference grid
     idx = pd.date_range("2020-01-01", periods=10, tz="UTC")
     s = pd.Series(np.linspace(100, 109, len(idx)), index=idx, dtype="float64")
 
@@ -31,7 +31,7 @@ def test__process_symbol_happy_and_outlier_error():
     assert res.kept is True and res.series is not None
     assert "non_na_pct" in res.diagnostics
 
-    # 2) Der Fill-Backstop ignoriert outlier_cfg aktuell und bleibt stabil.
+    # 2) The fill backstop currently ignores outlier_cfg and remains stable.
     res2 = _process_symbol(
         symbol="BBB",
         series=s,
@@ -51,7 +51,7 @@ def test_process_and_fill_prices_empty_and_union_grid():
     df, removed, diag = process_and_fill_prices(pd.DataFrame(), n_jobs=1)
     assert df.empty and removed == [] and diag == {}
 
-    # union grid + Entfernen durch Qualität (hier künstlich)
+    # union grid + removal via quality gates (artificial here)
     idx1 = pd.date_range("2020-01-01", periods=5, tz="UTC")
     idx2 = pd.date_range("2020-01-03", periods=3, tz="UTC")
     prices = pd.DataFrame(
@@ -61,6 +61,6 @@ def test_process_and_fill_prices_empty_and_union_grid():
         }
     )
     out, removed, diag = process_and_fill_prices(prices, grid_mode="union", n_jobs=1)
-    # B wird entfernt (nahezu leer)
+    # B is removed (almost empty)
     assert "B" in set(removed)
     assert "A" in set(out.columns)

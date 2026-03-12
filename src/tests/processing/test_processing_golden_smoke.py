@@ -19,7 +19,7 @@ def _mini_wide_prices() -> pd.DataFrame:
     a = pd.Series(np.linspace(100, 109, len(idx)), index=idx)
     b = pd.Series(np.linspace(200, 209, len(idx)), index=idx)
     b.iloc[3:5] = np.nan  # LÃ¼cke (len=2)
-    a.iloc[7] = 500.0  # Outlier-Spike -> sollte geflaggt werden
+    a.iloc[7] = 500.0  # outlier spike -> should be flagged
     return pd.DataFrame({"A": a, "B": b})
 
 
@@ -40,7 +40,7 @@ def test_processing_golden_smoke(
     # 1) Schweres & Volatiles vollstÃ¤ndig neutralisieren
     # No runtime-context collection is executed here; this test runs fully in-memory.
 
-    # 2) Minimaler Wide-Input (keine Datei-I/O)
+    # 2) Minimal wide input (no file I/O)
     prices_wide = _mini_wide_prices()
 
     # 3) Parameter wie in "echtem" Lauf â€“ aber ohne I/O
@@ -96,7 +96,7 @@ def test_processing_golden_smoke(
         "processing": agg,
     }
 
-    # Manifest-Ã¤hnliche Mini-Struktur (fÃ¼r Konsistenz der Goldens)
+    # Manifest-like mini structure (for golden consistency)
     manifest_like = {
         "cfg_path": "config.yaml",
         "inputs": {
@@ -109,7 +109,7 @@ def test_processing_golden_smoke(
     masked_diag = mask_diag_payload(diag_payload)
     masked_man = mask_manifest_payload(manifest_like)
 
-    # 6) Schreiben/Vergleichen der Goldens (winzige JSONs)
+    # 6) Write/compare goldens (tiny JSON files)
     g_diag = golden_dir / "processing_smoke.diag.json"
     g_man = golden_dir / "processing_smoke.manifest.json"
 
@@ -121,7 +121,7 @@ def test_processing_golden_smoke(
         g_man.write_text(
             json.dumps(masked_man, indent=2, ensure_ascii=False), encoding="utf-8"
         )
-        pytest.skip("Goldens aktualisiert (UPDATE_GOLDEN=1).")
+        pytest.skip("Goldens updated (UPDATE_GOLDEN=1).")
     else:
         exp_diag = json.loads(g_diag.read_text(encoding="utf-8"))
         exp_man = json.loads(g_man.read_text(encoding="utf-8"))

@@ -201,9 +201,9 @@ def _delete_target(root: Path, t: ResetTarget, *, yes: bool) -> tuple[bool, str]
     if not _is_within(root, p):
         return False, f"SKIP (ausserhalb Repo): {p} ({t.reason})"
     if not p.exists():
-        return False, f"OK (nicht vorhanden): {p} ({t.reason})"
+        return False, f"OK (not present): {p} ({t.reason})"
     if not yes:
-        return False, f"DRY-RUN: wuerde loeschen: {p} ({t.reason})"
+        return False, f"DRY-RUN: would delete: {p} ({t.reason})"
 
     try:
         if p.is_dir():
@@ -262,7 +262,7 @@ def main(argv: list[str] | None = None) -> int:
     root = _find_repo_root(args.root or Path.cwd())
     cfg_path = _resolve_under_root(root, args.cfg)
     if not cfg_path.exists():
-        raise SystemExit(f"Config nicht gefunden: {cfg_path}")
+        raise SystemExit(f"Config not found: {cfg_path}")
 
     targets = gather_universe_reset_targets(
         root=root,
@@ -281,9 +281,9 @@ def main(argv: list[str] | None = None) -> int:
             deleted += 1
 
     if args.yes:
-        print(f"Fertig. Geloescht: {deleted} Eintraege.")
+        print(f"Done. Deleted: {deleted} entries.")
     else:
-        print("Dry-run fertig. Mit normalem Start tatsaechlich loeschen.")
+        print("Dry run complete. Use a normal run to actually delete files.")
     return 0
 
 

@@ -95,7 +95,12 @@ def _empty_bo(cfg_eff: dict | None = None) -> BORunResult:
 
 
 def _fake_artifact(
-    *, cfg_eff: dict | None = None, n_pairs: int = 1, n_trades: int = 1
+    *,
+    cfg_eff: dict | None = None,
+    n_pairs: int = 1,
+    n_trades: int = 1,
+    raw_trades: pd.DataFrame | None = None,
+    portfolio: dict | None = None,
 ) -> rb.SingleRunArtifacts:
     idx = pd.to_datetime(["2024-01-02", "2024-01-03"])
     eq = pd.Series([100.0, 101.0], index=idx, name="equity")
@@ -116,7 +121,9 @@ def _fake_artifact(
         borrow_ctx=None,
         stats=stats,
         trades=trades,
-        raw_trades=trades.copy(),
+        raw_trades=raw_trades.copy()
+        if isinstance(raw_trades, pd.DataFrame)
+        else trades.copy(),
         orders=pd.DataFrame(),
         test_equity=eq,
         test_summary={
@@ -135,6 +142,7 @@ def _fake_artifact(
             "num_trades": n_trades,
         },
         train_refit=None,
+        portfolio=portfolio or {},
     )
 
 
@@ -523,6 +531,98 @@ def test_run_walkforward_global_reports(
     assert res["n_windows"] >= 1
     assert (out_dir / "report" / "test_summary.json").exists()
     assert (out_dir / "report" / "test_equity.csv").exists()
+
+
+def test_run_walkforward_baseline_intents_uses_global_intent_simulation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    idx = pd.bdate_range("2024-01-02", periods=60)
+    panel = _make_price_panel(idx, ["AAA", "BBB"])
+    prices_path = tmp_path / "panel.pkl"
+    panel.to_pickle(prices_path)
+
+    pairs_path = tmp_path / "pairs.csv"
+    _write_pairs_csv(pairs_path, "AAA", "BBB")
+
+    cfg = _base_cfg(prices_path, pairs_path)
+    cfg["backtest"]["range"] = {"start": "2024-01-02", "end": "2024-03-29"}
+    cfg["backtest"]["walkforward"] = {
+        "enabled": True,
+        "train_mode": "expanding",
+        "initial_train_months": 1,
+        "test_months": 1,
+        "step_months": 1,
+    }
+
+    def fake_run_once(*, cfg_eff, **_kwargs):
+        intents = pd.DataFrame(
+            [
+                {
+                    "pair": "AAA-BBB",
+                    "signal_date": pd.Timestamp("2024-02-20"),
+                    "signal": 1,
+                    "z_signal": -2.5,
+                    "entry_end": pd.Timestamp("2024-02-29"),
+                    "exit_end": pd.Timestamp("2024-03-29"),
+                }
+            ]
+        )
+        return _fake_artifact(
+            cfg_eff=cfg_eff,
+            n_pairs=1,
+            n_trades=0,
+            raw_trades=intents,
+            portfolio={
+                "AAA-BBB": {
+                    "intents": intents,
+                    "state": {
+                        "pair_key": "AAA-BBB",
+                        "y_symbol": "AAA",
+                        "x_symbol": "BBB",
+                    },
+                }
+            },
+        )
+
+    monkeypatch.setattr(rb, "_run_once", fake_run_once)
+    monkeypatch.setattr(
+        rb,
+        "_apply_global_positions_ledger",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("legacy ledger must not run for intent portfolios")
+        ),
+    )
+    monkeypatch.setattr(
+        rb,
+        "rescale_trades_stateful",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("stateful rescale must not run for intent portfolios")
+        ),
+    )
+
+    seen: dict[str, object] = {}
+
+    def _fake_global_backtest(**kwargs):
+        seen["portfolio"] = kwargs["portfolio"]
+        return (
+            pd.DataFrame(
+                {
+                    "date": pd.to_datetime(["2024-01-02", "2024-01-03"]),
+                    "equity": [100.0, 101.0],
+                }
+            ),
+            pd.DataFrame({"pair": ["AAA-BBB"], "net_pnl": [1.0]}),
+        )
+
+    monkeypatch.setattr(rb, "backtest_portfolio_with_yaml_cfg", _fake_global_backtest)
+
+    out_dir = tmp_path / "wf_intents"
+    res = rb.run(cfg, out_dir=out_dir, quick=False)
+
+    portfolio = seen["portfolio"]
+    assert isinstance(portfolio, dict)
+    assert res["n_windows"] >= 1
+    assert all(str(key).startswith("WF-") for key in portfolio)
 
 
 def test_runner_backtest_main_success_and_missing_cfg(

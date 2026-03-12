@@ -23,15 +23,15 @@ def test_safe_log_series_and_frame():
 
 
 def test_robust_outlier_mask_small_series_and_spike():
-    # <5 Werte -> immer False
+    # <5 values -> always False
     small = pd.Series([1.0, 1.1, 1.2, 1.1])
     m = robust_outlier_mask_causal(small, zscore=4.0, window=3, use_log_returns=True)
     assert not m.any()
 
-    # Deutlicher Spike, aber mit minimaler deterministischer Variation (MAD > 0)
+    # Clear spike, but with minimal deterministic variation (MAD > 0)
     base = 100.0 + 0.01 * np.arange(21)
     x = pd.Series(base.copy())
-    x.iloc[10] = 500.0  # großer Spike
+    x.iloc[10] = 500.0  # large spike
     m2 = robust_outlier_mask_causal(x, zscore=3.0, window=5, use_log_returns=True)
     assert bool(m2.iloc[10])
     assert m2.any()

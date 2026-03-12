@@ -7,16 +7,16 @@ from processing.config_loader import load_config
 
 
 def test_load_config_prefers_env_path(tmp_path: Path, monkeypatch):
-    # Projekt-Dateien, die es NICHT sein sollen
+    # project files that it should NOT be
     (tmp_path / "configs").mkdir(parents=True, exist_ok=True)
     (tmp_path / "configs" / "config.yaml").write_text("a: 1\n", encoding="utf-8")
 
-    # Eigentliche gewünschte Config via ENV
+    # actual desired config via ENV
     env_cfg = tmp_path / "override.yaml"
     env_cfg.write_text("answer: 42\n", encoding="utf-8")
     monkeypatch.setenv("BACKTEST_CONFIG", str(env_cfg))
 
-    # Arbeitsverzeichnis auf tmp_path setzen, damit Kandidatenliste dort sucht
+    # set working directory to tmp_path so the candidate list is searched there
     monkeypatch.chdir(tmp_path)
 
     cfg = load_config(None)

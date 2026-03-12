@@ -13,7 +13,7 @@ def test_load_config_env_var(tmp_path, monkeypatch):
 
 
 def test_load_config_file_not_found(tmp_path, monkeypatch):
-    # Leeres Arbeitsverzeichnis ohne configs -> Fehler
+    # empty working directory without configs -> error
     monkeypatch.chdir(tmp_path)
     monkeypatch.delenv("BACKTEST_CONFIG", raising=False)
     monkeypatch.delenv("STRAT_CONFIG", raising=False)

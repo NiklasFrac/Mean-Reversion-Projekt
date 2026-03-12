@@ -246,7 +246,7 @@ def load_fundamentals_store(path: Path | None) -> pd.DataFrame:
                 df = pd.read_csv(candidate, index_col=0)
         except Exception as e:
             logger.warning(
-                "Fundamentals-Cache konnte nicht geladen werden (%s): %s", candidate, e
+                "Could not load fundamentals cache (%s): %s", candidate, e
             )
             continue
         if not isinstance(df, pd.DataFrame):
@@ -275,18 +275,18 @@ def save_fundamentals_store(df: pd.DataFrame, path: Path) -> Path:
             df.to_csv(path, index=True)
             used_path = path
         logger.info(
-            "Fundamentals gespeichert: %s (rows=%d)", used_path, int(df.shape[0])
+            "Saved fundamentals: %s (rows=%d)", used_path, int(df.shape[0])
         )
     except Exception as e:
         if suffix in {".parquet", ".pq"}:
             fallback = path.with_suffix(".pkl")
             logger.warning(
-                "Parquet-Write fehlgeschlagen (%s), fallback Pickle: %s", e, fallback
+                "Parquet write failed (%s), falling back to pickle: %s", e, fallback
             )
             df.to_pickle(fallback)
             used_path = fallback
             logger.info(
-                "Fundamentals gespeichert (Fallback Pickle): %s (rows=%d)",
+                "Saved fundamentals (pickle fallback): %s (rows=%d)",
                 fallback,
                 int(df.shape[0]),
             )

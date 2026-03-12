@@ -21,6 +21,6 @@ def test_atomic_write_parquet_logs_warning_on_failure(
     monkeypatch.setattr(pd.DataFrame, "to_parquet", boom, raising=True)
     with caplog.at_level("WARNING"), pytest.raises(RuntimeError):
         atomic_write_parquet(df, target, compression="zstd")
-    # keine Datei erzeugt, aber WARNING geloggt
+    # no file created, but WARNING logged
     assert not target.exists()
     assert any("Parquet atomic write failed" in rec.message for rec in caplog.records)

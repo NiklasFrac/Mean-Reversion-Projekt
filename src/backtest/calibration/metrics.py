@@ -63,9 +63,27 @@ def derive_exec_metrics(trades: pd.DataFrame) -> pd.DataFrame:
     fees = _to_float(cast(pd.Series, df.get("fees", 0.0)))
     slip = _to_float(cast(pd.Series, df.get("slippage_cost", 0.0)))
     imp = _to_float(cast(pd.Series, df.get("impact_cost", 0.0)))
+    buyin = _to_float(cast(pd.Series, df.get("buyin_penalty_cost", 0.0)))
+    emergency = _to_float(
+        cast(pd.Series, df.get("exec_emergency_penalty_cost", 0.0))
+    )
+    diag_only = (
+        pd.Series(df.get("exec_diag_costs_only", False), index=df.index)
+        .fillna(False)
+        .astype(bool)
+    )
 
-    total_costs_cash = fees + slip + imp  # negative costs by convention
+    realized_costs_cash = fees + buyin + emergency
+    realized_costs_cash = realized_costs_cash + slip.where(~diag_only, 0.0)
+    realized_costs_cash = realized_costs_cash + imp.where(~diag_only, 0.0)
+    diagnostic_costs_cash = slip.where(diag_only, 0.0) + imp.where(diag_only, 0.0)
+    total_costs_cash = realized_costs_cash + diagnostic_costs_cash
+
+    df["exec_realized_costs"] = realized_costs_cash
+    df["exec_diagnostic_costs"] = diagnostic_costs_cash
     df["exec_total_costs"] = total_costs_cash
+    df["exec_realized_bps"] = -_safe_div(realized_costs_cash, gross_notional) * 1e4
+    df["exec_diagnostic_bps"] = -_safe_div(diagnostic_costs_cash, gross_notional) * 1e4
     df["exec_total_bps"] = -_safe_div(total_costs_cash, gross_notional) * 1e4
     df["exec_slippage_bps"] = -_safe_div(slip, gross_notional) * 1e4
     df["exec_impact_bps"] = -_safe_div(imp, gross_notional) * 1e4

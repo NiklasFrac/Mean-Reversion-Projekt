@@ -242,9 +242,9 @@ def _build_trade_rows(
         try:
             beta_entry = float(beta.loc[entry_ts])
         except Exception:
-            beta_entry = 1.0
-        if not np.isfinite(beta_entry) or beta_entry == 0.0:
-            beta_entry = 1.0
+            continue
+        if not np.isfinite(beta_entry) or beta_entry <= 0.0:
+            continue
         beta_abs = abs(beta_entry)
 
         gross_entry = float(abs(py0) + beta_abs * abs(px0))

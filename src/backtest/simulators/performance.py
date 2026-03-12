@@ -14,7 +14,7 @@ if not logger.handlers:
     logger.addHandler(ch)
 logger.setLevel("INFO")
 
-# Optionales Kostenmodell (Batch 4)
+# Optional cost model (batch 4)
 try:
     _cm_mod = importlib.import_module("backtest.cost.cost_model")
     cm_compute_trade_cost: Any | None = getattr(_cm_mod, "compute_trade_cost", None)
@@ -30,7 +30,7 @@ except Exception:
 
 
 def calculate_daily_pnl(signals: pd.Series, prices: pd.Series) -> pd.Series:
-    """Lineare PnL-Zerlegung: Cashflow aus Positionswechsel + MTM aus Vorposition * ΔPreis."""
+    """Linear PnL decomposition: cashflow from position changes + MTM from prior position * delta price."""
     if not signals.index.equals(prices.index):
         prices = prices.reindex(signals.index)
     else:
@@ -77,8 +77,8 @@ def apply_costs(
     adv_coeff: float = 0.12,
 ) -> pd.Series:
     """
-    Per-Trade Kosten auf Tagesebene verbuchen (nur an Signalkanten).
-    Für unit-size Trades (1 Lot); Skalierung durch Strategiegröße extern.
+    Book per-trade costs at the daily level (only on signal edges).
+    For unit-size trades (1 lot); strategy sizing scales externally.
     """
     signals = signals.ffill().fillna(0).astype(int)
     price_y = price_y.reindex(signals.index).ffill()
@@ -111,7 +111,7 @@ def apply_costs(
                 min_fee_per_lot=float(min_fee_per_lot),
             )
         else:
-            # einfacher Fallback: linear + sqrt-impact
+            # simple fallback: linear + sqrt impact
             notional = abs(py) + abs(px)
             lin = float(slippage_pct) * notional
             impact = (
@@ -126,10 +126,10 @@ def apply_costs(
 
 
 def apply_costs_with_size(
-    signals: pd.Series,  # {-1,0,+1} Position über Zeit
+    signals: pd.Series,  # {-1,0,+1} position over time
     price_y: pd.Series,
     price_x: pd.Series,
-    size_ts: pd.Series,  # Stückzahl über Zeit (0 außerhalb der Position)
+    size_ts: pd.Series,  # share count over time (0 outside the position)
     per_trade_cost: float,
     slippage_pct: float,
     adv_t1: float | None = None,
@@ -143,13 +143,13 @@ def apply_costs_with_size(
     price_x = price_x.reindex(signals.index).ffill().astype(float)
     size_ts = size_ts.reindex(signals.index).fillna(0).astype(int)
 
-    # Trades passieren nur bei Kanten
+    # Trades occur only on edges
     trade_flags = (signals != signals.shift()).fillna(signals != 0)
 
-    # Größe am Trade-Tag = aktuelle Positionsgröße
+    # Size on the trade day = current position size
     edge_size = size_ts.where(trade_flags, 0).astype(float)
 
-    # Vektorisierte Kostenkomponenten
+    # Vectorized cost components
     py = price_y.to_numpy(dtype=float, na_value=np.nan)
     px = price_x.to_numpy(dtype=float, na_value=np.nan)
     missing = np.isnan(py) | np.isnan(px)
@@ -286,7 +286,7 @@ def apply_execution_costs(
 
 
 def _to_series_rate(rate: float | pd.Series, index: pd.Index) -> pd.Series:
-    """Hilfsfunktion: float → konstante Serie; Serie wird auf Index ausgerichtet."""
+    """Helper: float -> constant series; a Series is aligned to the index."""
     if isinstance(rate, pd.Series):
         return rate.reindex(index).ffill().bfill().astype(float)
     return pd.Series(float(rate), index=index, dtype=float)
@@ -299,12 +299,12 @@ def accrue_borrow_series(
     day_basis: float = 252.0,
 ) -> pd.Series:
     """
-    Vektorisierte tägliche Borrow-Accruals (negativ, in Cash).
-    - short_shares: >0 = Anzahl leerverkaufter Stücke, 0 sonst
-    - price: Preis-Zeitreihe (Index wie short_shares)
-    - annual_rate: Dezimal p.a. (z.B. 0.02) oder Serie
-    - day_basis: 252 (Handelstage) oder 365
-    Rückgabe: Serie "borrow_cost" (≤ 0)
+    Vectorized daily borrow accruals (negative, in cash).
+    - short_shares: >0 = number of shares sold short, 0 otherwise
+    - price: price time series (same index as short_shares)
+    - annual_rate: decimal p.a. (e.g. 0.02) or series
+    - day_basis: 252 (trading days) or 365
+    Returns: series "borrow_cost" (<= 0)
     """
     idx = short_shares.index
     px = price.reindex(idx).ffill().bfill().astype(float)
@@ -325,9 +325,9 @@ def accrue_borrow_pair(
     day_basis: float = 252.0,
 ) -> pd.Series:
     """
-    Borrow-Accrual für Pairs (Signal +1 => long y / short x; Signal −1 => short y / long x).
-    - signals ∈ {-1,0,+1}, size_ts = Stückzahl pro Leg (gleiche Größe je Leg)
-    - annual_rate_* sind p.a. (Dezimal) oder Serien (tagesvariabel)
+    Borrow accrual for pairs (signal +1 => long y / short x; signal -1 => short y / long x).
+    - signals ? {-1,0,+1}, size_ts = share count per leg (same size per leg)
+    - annual_rate_* are p.a. (decimal) or series (time-varying by day)
     """
     idx = signals.index
     s = signals.ffill().fillna(0).astype(int)
@@ -348,7 +348,7 @@ def accrue_borrow_pair(
 
 
 def compute_drawdowns(equity: pd.Series) -> tuple[pd.Series, float, int, int]:
-    """Drawdown-Serie (negativ), max DD, max DD-Dauer (Tage), Recovery-Dauer (Tage)."""
+    """Drawdown series (negative), max DD, max DD duration (days), recovery duration (days)."""
     eq = equity.astype(float)
     cummax = eq.cummax()
     drawdown = eq / cummax.replace(0, np.nan) - 1.0
@@ -459,14 +459,19 @@ def bootstrap_sharpe_ci(
 
 def _ensure_cost_cols(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Sichert alle benötigten Kosten-/PnL-Spalten ab und füllt fehlende Werte.
-    Kostenkomponenten dürfen beliebiges Vorzeichen haben (≤0 als Kosten empfohlen).
+    Ensures all required cost/PnL columns exist and fills missing values.
+    Cost components may have any sign (<=0 recommended for costs).
     """
+    had_total = "total_costs" in df.columns
+    had_net = "net_pnl" in df.columns
     need_float = (
         "fees",
         "slippage_cost",
         "impact_cost",
         "borrow_cost",
+        "buyin_penalty_cost",
+        "exec_emergency_penalty_cost",
+        "execution_diagnostic_costs",
         "total_costs",
         "net_pnl",
     )
@@ -475,20 +480,26 @@ def _ensure_cost_cols(df: pd.DataFrame) -> pd.DataFrame:
         if c not in out.columns:
             out[c] = 0.0
         out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0).astype(float)
-    # total_costs konsistent belegen, falls leer/0 aber Komponenten vorhanden
-    comp = (
-        out["fees"] + out["slippage_cost"] + out["impact_cost"] + out["borrow_cost"]
+    diag_only = (
+        pd.Series(out.get("exec_diag_costs_only", False), index=out.index)
+        .fillna(False)
+        .astype(bool)
+    )
+    slip_realized = out["slippage_cost"].where(~diag_only, 0.0)
+    impact_realized = out["impact_cost"].where(~diag_only, 0.0)
+    out["execution_diagnostic_costs"] = (
+        out["slippage_cost"].where(diag_only, 0.0)
+        + out["impact_cost"].where(diag_only, 0.0)
     ).astype(float)
-    if "total_costs" not in df.columns or not np.isfinite(out["total_costs"]).any():
-        out["total_costs"] = comp
-    else:
-        # falls vorhanden, dennoch NaNs/inf beheben
-        out["total_costs"] = (
-            pd.to_numeric(out["total_costs"], errors="coerce")
-            .fillna(comp)
-            .astype(float)
-        )
-    # gross_pnl rekonstruieren, falls nicht vorhanden
+    out["total_costs"] = (
+        out["fees"]
+        + slip_realized
+        + impact_realized
+        + out["borrow_cost"]
+        + out["buyin_penalty_cost"]
+        + out["exec_emergency_penalty_cost"]
+    ).astype(float)
+    # Reconstruct gross_pnl if it is missing
     if "gross_pnl" not in out.columns:
         out["gross_pnl"] = out["net_pnl"].astype(float) - out["total_costs"].astype(
             float
@@ -497,6 +508,17 @@ def _ensure_cost_cols(df: pd.DataFrame) -> pd.DataFrame:
         out["gross_pnl"] = pd.to_numeric(out["gross_pnl"], errors="coerce").fillna(
             out["net_pnl"].astype(float) - out["total_costs"].astype(float)
         )
+    net_ref = out["gross_pnl"].astype(float) + out["total_costs"].astype(float)
+    if had_net:
+        out["net_pnl"] = (
+            pd.to_numeric(out.get("net_pnl", 0.0), errors="coerce")
+            .fillna(net_ref)
+            .astype(float)
+        )
+    else:
+        out["net_pnl"] = net_ref.astype(float)
+    if not had_total:
+        out["total_costs"] = out["total_costs"].astype(float)
     return out
 
 
@@ -504,17 +526,17 @@ def _maybe_derive_group_cols(
     df: pd.DataFrame, by: Sequence[str] | None
 ) -> tuple[pd.DataFrame, list[str]]:
     """
-    Erzeugt bekannte abgeleitete Gruppierungs-Spalten on-the-fly:
-      'month'   → exit_date.to_period('M').start_time
-      'week'    → exit_date.to_period('W').start_time
+    Builds known derived grouping columns on the fly:
+      'month'   -> exit_date.to_period('M').start_time
+      'week'    -> exit_date.to_period('W').start_time
       'quarter' → exit_date.to_period('Q').start_time
-    Andere Spaltennamen werden unverändert erwartet.
+    Other column names are expected unchanged.
     """
     if not by:
         return df, []
     out = df.copy()
     want = [str(c) for c in by]
-    # exit_date (oder Fallback) inferieren
+    # Infer exit_date (or fallback)
     exit_col = None
     for cand in (
         "exit_date",
@@ -535,7 +557,7 @@ def _maybe_derive_group_cols(
             out["week"] = dt.dt.to_period("W").dt.start_time
         if "quarter" in want:
             out["quarter"] = dt.dt.to_period("Q").dt.to_timestamp()
-    # nur tatsächlich vorhandene Spalten zurückgeben
+    # Return only columns that are actually present
     final_by = [c for c in want if c in out.columns]
     return out, final_by
 
@@ -555,10 +577,10 @@ def pnl_explain(
     atol: float = 1e-6,
 ) -> pd.DataFrame:
     """
-    Aggregiert P&L gemäß Schema: gross → fees → slippage → impact → borrow → net.
-    - `by`: optionale Gruppierung (z.B. ["pair"] oder ["month","pair"]).
-            Erkannt/auto-abgeleitet: "month", "week", "quarter" (aus exit_date).
-    - Liefert pro Gruppe Summen und Basis-KPIs (Trades, WinRate, Avg/Std Net).
+    Aggregates P&L using the schema: gross -> fees -> slippage -> impact -> borrow -> net.
+    - `by`: optional grouping (e.g. ["pair"] or ["month","pair"]).
+            Auto-detected/inferred: "month", "week", "quarter" (from exit_date).
+    - Returns per-group sums and base KPIs (Trades, WinRate, Avg/Std Net).
     """
     if trades_df is None or trades_df.empty:
         cols = [
@@ -567,6 +589,9 @@ def pnl_explain(
             "slippage_cost",
             "impact_cost",
             "borrow_cost",
+            "buyin_penalty_cost",
+            "exec_emergency_penalty_cost",
+            "execution_diagnostic_costs",
             "total_costs",
             "net_pnl",
             "NumTrades",
@@ -579,7 +604,7 @@ def pnl_explain(
     df0 = _ensure_cost_cols(trades_df)
     df, group_cols = _maybe_derive_group_cols(df0, by)
     if not group_cols:
-        # Einzeilige Gesamtübersicht
+        # Single-line overall summary
         grp = df.assign(_ALL="ALL").groupby(["_ALL"], dropna=False, observed=False)
     else:
         grp = df.groupby(group_cols, dropna=False, observed=False)
@@ -590,6 +615,9 @@ def pnl_explain(
         slippage_cost=("slippage_cost", "sum"),
         impact_cost=("impact_cost", "sum"),
         borrow_cost=("borrow_cost", "sum"),
+        buyin_penalty_cost=("buyin_penalty_cost", "sum"),
+        exec_emergency_penalty_cost=("exec_emergency_penalty_cost", "sum"),
+        execution_diagnostic_costs=("execution_diagnostic_costs", "sum"),
         total_costs=("total_costs", "sum"),
         net_pnl=("net_pnl", "sum"),
         NumTrades=("net_pnl", "size"),
@@ -598,22 +626,16 @@ def pnl_explain(
         StdNet=("net_pnl", "std"),
     ).reset_index()
 
-    # Konsistenz (optional): net ≈ gross + fees + slippage + impact + borrow
+    # Consistency (optional): net ≈ gross + fees + slippage + impact + borrow
     if check_consistency and not agg.empty:
         lhs = agg["net_pnl"].astype(float)
-        rhs = (
-            agg["gross_pnl"]
-            + agg["fees"]
-            + agg["slippage_cost"]
-            + agg["impact_cost"]
-            + agg["borrow_cost"]
-        ).astype(float)
+        rhs = (agg["gross_pnl"] + agg["total_costs"]).astype(float)
         bad = (lhs - rhs).abs() > float(atol)
         if bool(bad.any()):
-            # Nur Logging; kein Raise (Reporting soll nie crashen)
+            # Logging only; no raise (reporting should never crash)
             n_bad = int(bad.sum())
             logger.warning(
-                "pnl_explain: %d Gruppen mit inkonsistenter Summe (Toleranz %.1e).",
+                "pnl_explain: %d groups with an inconsistent sum (tolerance %.1e).",
                 n_bad,
                 atol,
             )
@@ -637,7 +659,7 @@ def _holding_days_series(df: pd.DataFrame) -> pd.Series:
 
 
 def _maker_share_series(df: pd.DataFrame) -> pd.Series:
-    """Maker-Share ∈ [0,1], falls maker_fills/taker_fills vorhanden; sonst NaN."""
+    """Maker share in [0,1] if maker_fills/taker_fills are present; otherwise NaN."""
     if "maker_fills" in df.columns and "taker_fills" in df.columns:
         m = pd.to_numeric(df["maker_fills"], errors="coerce").fillna(0.0)
         t = pd.to_numeric(df["taker_fills"], errors="coerce").fillna(0.0)
@@ -648,9 +670,9 @@ def _maker_share_series(df: pd.DataFrame) -> pd.Series:
 
 def _pick_notional_series(df: pd.DataFrame) -> pd.Series | None:
     """
-    Wählt verfügbare Notional-Spalte für Size-Buckets:
-      bevorzugt 'vx_notional' → 'gross_notional' → 'abs_notional' → 'notional'.
-    None, wenn keine existiert.
+    Chooses an available notional column for size buckets:
+      prefer 'vx_notional' -> 'gross_notional' -> 'abs_notional' -> 'notional'.
+    None if none exists.
     """
     for c in ("vx_notional", "gross_notional", "abs_notional", "notional"):
         if c in df.columns:
@@ -666,13 +688,13 @@ def make_bucket_reports(
     top_n_pairs: int = 20,
 ) -> dict[str, pd.DataFrame]:
     """
-    Erzeugt Standard-Bucket-Reports als dict:
-      - "by_month": Zeitbuckets nach exit_date (freq ∈ {"W","M","Q"})
-      - "by_holding": Holding-Period-Buckets (0–1 / 2–5 / 6–10 / >10 Tage)
-      - "by_size_q": Size-Quantile (Q{size_quantiles}) über Notional (falls vorhanden)
-      - "by_liquidity": Maker-Share-Tertile (falls maker/taker_fills vorhanden)
-      - "by_pair": Paar-Aggregation (optional Top-N Filter)
-    Alle Tabellen enthalten P&L-Explain-Spalten + NumTrades/WinRate/Avg/Std.
+    Builds standard bucket reports as a dict:
+      - "by_month": time buckets by exit_date (freq in {"W","M","Q"})
+      - "by_holding": holding-period buckets (0-1 / 2-5 / 6-10 / >10 days)
+      - "by_size_q": size quantiles (Q{size_quantiles}) over notional (if present)
+      - "by_liquidity": maker-share tertiles (if maker/taker_fills are present)
+      - "by_pair": pair aggregation (optional Top-N filter)
+    All tables contain P&L explain columns plus NumTrades/WinRate/Avg/Std.
     """
     reports: dict[str, pd.DataFrame] = {}
     if trades_df is None or trades_df.empty:
@@ -765,6 +787,13 @@ def make_bucket_reports(
                             "slippage_cost": [rest["slippage_cost"].sum()],
                             "impact_cost": [rest["impact_cost"].sum()],
                             "borrow_cost": [rest["borrow_cost"].sum()],
+                            "buyin_penalty_cost": [rest["buyin_penalty_cost"].sum()],
+                            "exec_emergency_penalty_cost": [
+                                rest["exec_emergency_penalty_cost"].sum()
+                            ],
+                            "execution_diagnostic_costs": [
+                                rest["execution_diagnostic_costs"].sum()
+                            ],
                             "total_costs": [rest["total_costs"].sum()],
                             "net_pnl": [rest["net_pnl"].sum()],
                             "NumTrades": [int(rest["NumTrades"].sum())],
@@ -793,8 +822,8 @@ def make_bucket_reports(
 
 def default_bucket_specs(trades_df: pd.DataFrame) -> dict[str, bool]:
     """
-    Gibt an, welche Standard-Buckets auf Basis der vorhandenen Spalten sinnvoll sind.
-    Rein informativ; die eigentliche Erstellung übernimmt make_bucket_reports(...).
+    Indicates which standard buckets are meaningful based on the available columns.
+    Informational only; actual creation is handled by make_bucket_reports(...).
     """
     has_exit = "exit_date" in trades_df.columns
     has_hold = "entry_date" in trades_df.columns and "exit_date" in trades_df.columns

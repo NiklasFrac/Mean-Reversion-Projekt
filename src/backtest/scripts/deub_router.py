@@ -32,7 +32,7 @@ def explain(cfg, parent_notional, px, lot):
     rounding = (slice_cfg.get("rounding", {}) or {}).get("mode", "floor").lower()
     min_child_notional = slice_cfg.get("min_child_notional", 0) or 0
     max_child_notional = slice_cfg.get("max_child_notional", float("inf"))
-    min_clip = rules.get("min_clip", 1)  # kann shares ODER Anteil sein
+    min_clip = rules.get("min_clip", 1)  # can be shares OR a fraction
     max_clip = rules.get("max_clip", 0.25)
     venue_over = r.get("venue_overrides", {}) or {}
 
@@ -41,10 +41,10 @@ def explain(cfg, parent_notional, px, lot):
         f"\nParent: notional=${parent_notional:,.0f}  px=${px:.4f}  lot={lot}  -> parent_shares={parent_sh}"
     )
 
-    # Zwei Deutungen: (A) min_clip als Anteile (so wie bei dir ‘1’) und (B) als Anteil am Parent
+    # Two interpretations: (A) min_clip as shares (as in your `1`) and (B) as a fraction of the parent
     candA_sh = min_clip if min_clip >= 1 else math.ceil(parent_sh * min_clip)
     candB_sh = math.ceil(parent_sh * max(min_clip, 0.0)) if min_clip < 1 else min_clip
-    # Wir nehmen A als “shares-Interpretation”, B als “fraction-Interpretation”
+    # We use A as the "shares interpretation" and B as the "fraction interpretation"
     candidates = []
     for label, sh in [
         ("min_clip_as_shares", candA_sh),
@@ -58,7 +58,7 @@ def explain(cfg, parent_notional, px, lot):
         notional = sh * px
         candidates.append((label, sh, notional))
 
-    print("\nSlice-Kandidaten (vor Venue-Checks):")
+    print("\nSlice candidates (before venue checks):")
     for label, sh, nto in candidates:
         gate = []
         if nto < min_child_notional:
@@ -80,7 +80,7 @@ def explain(cfg, parent_notional, px, lot):
         rel = ov.get("reliability", 1.0)
         mp = ov.get("max_participation", None)
 
-        # prüfe jeden Kandidaten gegen Venue-min_notional
+        # check each candidate against venue min_notional
         msgs = []
         for label, sh, nto in candidates:
             ok = nto >= v_min_notional
@@ -92,11 +92,11 @@ def explain(cfg, parent_notional, px, lot):
             + " | ".join(msgs)
         )
 
-    print("\nHinweis:")
-    print("  - Wenn ALLE Kandidaten an min_child_notional ODER min_notional scheitern,")
-    print("    kommt leere Child-Liste heraus -> ‘Routing produced no child orders’.")
-    print("  - ‘rounding: ceil’ verhindert Null-Shares bei sehr kleinen Clips.")
-    print("  - Setze venue min_notional = 0, wenn du kleine Tickets testen willst.")
+    print("\nNote:")
+    print("  - If ALL candidates fail min_child_notional OR min_notional,")
+    print("    the result is an empty child-order list -> 'Routing produced no child orders'.")
+    print("  - 'rounding: ceil' prevents zero-share orders for very small clips.")
+    print("  - Set venue min_notional = 0 if you want to test small tickets.")
 
 
 def main():

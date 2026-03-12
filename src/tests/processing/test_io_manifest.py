@@ -12,7 +12,7 @@ from processing.io_atomic import atomic_write_parquet, file_hash, make_manifest
 
 
 def test_atomic_write_parquet_handles_exception(monkeypatch, tmp_path: Path):
-    # Monkeypatch DataFrame.to_parquet -> wirft Exception -> darf nicht crashen
+    # monkeypatch DataFrame.to_parquet -> raises exception -> must not crash
     called = {"ok": False}
 
     def _boom(*args, **kwargs):
@@ -26,7 +26,7 @@ def test_atomic_write_parquet_handles_exception(monkeypatch, tmp_path: Path):
     with pytest.raises(RuntimeError):
         atomic_write_parquet(df, out, compression="zstd")
     assert called["ok"] is True
-    # Datei nicht erzeugt
+    # file not created
     assert not out.exists()
 
 
@@ -43,7 +43,7 @@ def test_file_hash_and_manifest(tmp_path: Path):
     man = make_manifest(cfg_path=cfg, inputs=inputs, extra={"k": 1})
     assert man["cfg_path"].endswith("cfg.yaml")
     assert man["inputs"]["raw_prices"]["sha1"] == expected
-    # None-Path wird erlaubt und sauber serialisiert
+    # None path is allowed and serialized cleanly
     assert man["inputs"]["raw_volume"]["path"] is None
 
 

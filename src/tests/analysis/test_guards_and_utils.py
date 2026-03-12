@@ -51,7 +51,7 @@ def test_file_and_dict_hash(tmp_path: Path):
 
 @pytest.mark.unit
 def test_main_param_guards_raise(monkeypatch, tmp_path: Path):
-    # Minimal-Konfig + kleine rolling_window, um Guard zu triggern
+    # minimal config + small rolling_window to trigger the guard
     prices = pd.DataFrame(
         {"A": np.exp(np.cumsum(np.zeros(60)))},
         index=pd.date_range("2020-01-01", periods=60, tz="UTC"),

@@ -1,5 +1,6 @@
 import numpy as np
 import pandas as pd
+import pytest
 
 from backtest.simulators import performance
 
@@ -97,3 +98,28 @@ def test_pnl_explain_and_bucket_reports() -> None:
     assert {"by_month", "by_holding", "by_size_q", "by_liquidity", "by_pair"}.issubset(
         reports.keys()
     )
+
+
+def test_pnl_explain_keeps_diag_costs_out_of_total_costs() -> None:
+    trades = pd.DataFrame(
+        {
+            "entry_date": ["2024-01-02"],
+            "exit_date": ["2024-01-05"],
+            "gross_pnl": [10.0],
+            "fees": [-1.0],
+            "slippage_cost": [-0.5],
+            "impact_cost": [-0.25],
+            "borrow_cost": [-0.1],
+            "buyin_penalty_cost": [-0.2],
+            "exec_emergency_penalty_cost": [-0.3],
+            "exec_diag_costs_only": [True],
+        }
+    )
+
+    explained = performance.pnl_explain(trades)
+
+    assert float(explained.loc[0, "execution_diagnostic_costs"]) == pytest.approx(
+        -0.75
+    )
+    assert float(explained.loc[0, "total_costs"]) == pytest.approx(-1.6)
+    assert float(explained.loc[0, "net_pnl"]) == pytest.approx(8.4)

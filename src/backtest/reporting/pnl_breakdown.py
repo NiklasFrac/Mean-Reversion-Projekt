@@ -225,7 +225,8 @@ def _add_tca_columns(
 def _materialize_cost_columns(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create deterministic standard cost columns:
-    ['fees','slippage_cost','impact_cost','borrow_cost'].
+    ['fees','slippage_cost','impact_cost','borrow_cost',
+     'buyin_penalty_cost','exec_emergency_penalty_cost'].
     Detected aliases are reused; missing fields default to 0.0.
     """
     out = df.copy()
@@ -246,6 +247,63 @@ def _materialize_cost_columns(df: pd.DataFrame) -> pd.DataFrame:
     _ensure("slippage_cost", "slippage_cost")
     _ensure("impact_cost", "impact_cost")
     _ensure("borrow_cost", "borrow_cost")
+    if "buyin_penalty_cost" not in out.columns:
+        out["buyin_penalty_cost"] = 0.0
+    if "exec_emergency_penalty_cost" not in out.columns:
+        out["exec_emergency_penalty_cost"] = 0.0
+    out["buyin_penalty_cost"] = pd.to_numeric(
+        out["buyin_penalty_cost"], errors="coerce"
+    ).fillna(0.0)
+    out["exec_emergency_penalty_cost"] = pd.to_numeric(
+        out["exec_emergency_penalty_cost"], errors="coerce"
+    ).fillna(0.0)
+    return out
+
+
+def _apply_cost_semantics(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for c in (
+        "fees",
+        "slippage_cost",
+        "impact_cost",
+        "borrow_cost",
+        "buyin_penalty_cost",
+        "exec_emergency_penalty_cost",
+    ):
+        if c not in out.columns:
+            out[c] = 0.0
+        out[c] = pd.to_numeric(out[c], errors="coerce").fillna(0.0)
+
+    diag_only = (
+        pd.Series(out.get("exec_diag_costs_only", False), index=out.index)
+        .fillna(False)
+        .astype(bool)
+    )
+    slip_realized = out["slippage_cost"].where(~diag_only, 0.0)
+    impact_realized = out["impact_cost"].where(~diag_only, 0.0)
+    out["execution_diagnostic_costs"] = (
+        out["slippage_cost"].where(diag_only, 0.0)
+        + out["impact_cost"].where(diag_only, 0.0)
+    )
+    out["total_costs"] = (
+        out["fees"]
+        + slip_realized
+        + impact_realized
+        + out["borrow_cost"]
+        + out["buyin_penalty_cost"]
+        + out["exec_emergency_penalty_cost"]
+    )
+    if "gross_pnl" not in out.columns:
+        out["gross_pnl"] = pd.to_numeric(
+            out.get("net_pnl", 0.0), errors="coerce"
+        ).fillna(0.0) - pd.to_numeric(out["total_costs"], errors="coerce").fillna(0.0)
+    else:
+        out["gross_pnl"] = pd.to_numeric(out["gross_pnl"], errors="coerce").fillna(0.0)
+    net_ref = out["gross_pnl"] + out["total_costs"]
+    if "net_pnl" not in out.columns:
+        out["net_pnl"] = net_ref
+    else:
+        out["net_pnl"] = pd.to_numeric(out["net_pnl"], errors="coerce").fillna(net_ref)
     return out
 
 
@@ -259,26 +317,11 @@ def _agg_cost_components(
 ) -> pd.DataFrame:
     """
     Aggregiert Kostenkomponenten pro Tag (und optional Symbol).
-    Erwartet, dass ['fees','slippage_cost','impact_cost','borrow_cost'] bereits existieren.
-    Optionaler 'spread' wird, falls vorhanden, mit aufsummiert (separat; NICHT in total_costs).
+    `slippage_cost` und `impact_cost` bleiben DiagnosekanÃ¤le; `total_costs`
+    folgt der Runtime-Semantik via `exec_diag_costs_only`.
+    Optional 'spread' is also summed when present (separately; NOT in total_costs).
     """
-    df = df.copy()
-
-    for c in ("fees", "slippage_cost", "impact_cost", "borrow_cost"):
-        if c not in df.columns:
-            df[c] = 0.0
-
-    if "net_pnl" not in df.columns:
-        if "gross_pnl" in df.columns:
-            df["net_pnl"] = (
-                pd.to_numeric(df["gross_pnl"], errors="coerce").fillna(0.0)
-                + pd.to_numeric(df["fees"], errors="coerce").fillna(0.0)
-                + pd.to_numeric(df["borrow_cost"], errors="coerce").fillna(0.0)
-                + pd.to_numeric(df["slippage_cost"], errors="coerce").fillna(0.0)
-                + pd.to_numeric(df["impact_cost"], errors="coerce").fillna(0.0)
-            )
-        else:
-            df["net_pnl"] = 0.0
+    df = _apply_cost_semantics(df)
 
     # spread (optional; neutral=0.0)
     if "spread" not in df.columns:
@@ -299,18 +342,14 @@ def _agg_cost_components(
         slippage_cost=("slippage_cost", "sum"),
         impact_cost=("impact_cost", "sum"),
         borrow_cost=("borrow_cost", "sum"),
+        buyin_penalty_cost=("buyin_penalty_cost", "sum"),
+        exec_emergency_penalty_cost=("exec_emergency_penalty_cost", "sum"),
+        execution_diagnostic_costs=("execution_diagnostic_costs", "sum"),
         spread=("spread", "sum"),
+        total_costs=("total_costs", "sum"),
         net_pnl=("net_pnl", "sum"),
         trades=("net_pnl", "count"),
     ).reset_index()
-
-    # total_costs = sum der Kosten (Spread NICHT enthalten; ist eigener Kanal)
-    agg["total_costs"] = (
-        agg["fees"].fillna(0.0)
-        + agg["slippage_cost"].fillna(0.0)
-        + agg["impact_cost"].fillna(0.0)
-        + agg["borrow_cost"].fillna(0.0)
-    )
 
     return agg
 
@@ -464,42 +503,39 @@ def generate_pnl_breakdown(
 
     # ---- Kostenkolumnen deterministisch anlegen ----
     t = _materialize_cost_columns(t)
+    t = _apply_cost_semantics(t)
 
     # ---- DAILY / SYMBOL (compat outputs) ----
     daily = (
         t.dropna(subset=[settle_col])
         .groupby(settle_col, as_index=False)
         .agg(
-            gross_pnl=(gross_col, "sum"),
+            gross_pnl=("gross_pnl", "sum"),
             fees=("fees", "sum"),
             slippage_cost=("slippage_cost", "sum"),
             impact_cost=("impact_cost", "sum"),
             borrow_cost=("borrow_cost", "sum"),
-            net_pnl=(net_col, "sum"),
-            trades=(net_col, "count"),
+            buyin_penalty_cost=("buyin_penalty_cost", "sum"),
+            exec_emergency_penalty_cost=("exec_emergency_penalty_cost", "sum"),
+            execution_diagnostic_costs=("execution_diagnostic_costs", "sum"),
+            total_costs=("total_costs", "sum"),
+            net_pnl=("net_pnl", "sum"),
+            trades=("net_pnl", "count"),
         )
-    )
-    daily["total_costs"] = (
-        daily["fees"].fillna(0.0)
-        + daily["slippage_cost"].fillna(0.0)
-        + daily["impact_cost"].fillna(0.0)
-        + daily["borrow_cost"].fillna(0.0)
     )
 
     by_symbol = t.groupby(sym_col, as_index=False).agg(
-        gross_pnl=(gross_col, "sum"),
+        gross_pnl=("gross_pnl", "sum"),
         fees=("fees", "sum"),
         slippage_cost=("slippage_cost", "sum"),
         impact_cost=("impact_cost", "sum"),
         borrow_cost=("borrow_cost", "sum"),
-        net_pnl=(net_col, "sum"),
-        trades=(net_col, "count"),
-    )
-    by_symbol["total_costs"] = (
-        by_symbol["fees"].fillna(0.0)
-        + by_symbol["slippage_cost"].fillna(0.0)
-        + by_symbol["impact_cost"].fillna(0.0)
-        + by_symbol["borrow_cost"].fillna(0.0)
+        buyin_penalty_cost=("buyin_penalty_cost", "sum"),
+        exec_emergency_penalty_cost=("exec_emergency_penalty_cost", "sum"),
+        execution_diagnostic_costs=("execution_diagnostic_costs", "sum"),
+        total_costs=("total_costs", "sum"),
+        net_pnl=("net_pnl", "sum"),
+        trades=("net_pnl", "count"),
     )
 
     _write_dual(out / "pnl_breakdown_daily", daily)
@@ -521,6 +557,9 @@ def generate_pnl_breakdown(
         "slippage_cost",
         "impact_cost",
         "borrow_cost",
+        "buyin_penalty_cost",
+        "exec_emergency_penalty_cost",
+        "execution_diagnostic_costs",
         "spread",
         "total_costs",
         "net_pnl",

@@ -26,7 +26,7 @@ def test_select_price_columns_wide_numeric():
         {
             "A": [1.0, 1.1, 1.2],
             "B": [2.0, 2.1, 2.2],
-            "volume": [10, 11, 12],  # soll raus
+            "volume": [10, 11, 12],  # should be removed
         },
         index=pd.date_range("2023-01-01", periods=3, tz="UTC"),
     )

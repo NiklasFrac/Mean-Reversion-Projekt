@@ -75,14 +75,14 @@ def fill_gap_segment(
     causal_only: bool = False,
 ) -> tuple[np.ndarray, str] | None:
     """
-    Bounded policy (mit Methode als Label):
+    Bounded policy (with the method as the label):
     - len==1 -> single-step: avg(ffill,bfill) / ffill / bfill
-    - len<=2 -> linear (lokal)
-    - len<=max_gap -> kurzer Kalman (nur wenn beidseitig Nachbarn)
+    - len<=2 -> linear (local)
+    - len<=max_gap -> short Kalman pass (only if neighbors exist on both sides)
     - else -> None
 
-    Bei causal_only=True:
-      - keine Zukunft verwenden: reines ffill (falls linker Wert existiert), sonst None
+    When causal_only=True:
+      - do not use future data: pure ffill (if a left value exists), otherwise None
     """
     length = end - start
     if length <= 0:
@@ -98,7 +98,7 @@ def fill_gap_segment(
             return np.full(length, float(left), dtype=float), "filled_ffill"
         return None
 
-    # Kontextfenster um die Luecke herum
+    # Context window around the gap
     window_start = max(0, start - 5)
     window_end = min(len(series), end + 5)
     window = series.iloc[window_start:window_end].copy()
@@ -130,7 +130,7 @@ def fill_gap_segment(
             arr = window.to_numpy(dtype=float)
             sm = kalman_smoother_level(arr, q=1e-4, r=float(np.nanvar(arr)))
 
-            # Gap-Position relativ zum Fenster
+            # Gap position relative to the window
             rel_start = start - window_start
             rel_end = end - window_start
 
@@ -150,12 +150,12 @@ def fill_gaps_safely(
     hard_drop: bool = True,
 ) -> tuple[pd.Series, bool, dict[str, Any]]:
     """
-    Fuellt *nur* innerhalb erlaubter Tradable-Bereiche.
-    Kein globales ffill/bfill. Rueckgabe: (filled_series, removed_flag, diagnostics)
+    Fills *only* within allowed tradable regions.
+    No global ffill/bfill. Return: (filled_series, removed_flag, diagnostics)
 
     Bei causal_only=True: ausschliesslich Vergangenheitsinformation (ffill-artig).
-    Non-tradable Gaps werden uebersprungen (kein Drop), um False-Drops zu vermeiden.
-    Bei hard_drop=False: unzulaessige Gaps werden NICHT gefuellt, aber auch NICHT zum Symbol-Drop.
+    Non-tradable gaps are skipped (no drop) to avoid false drops.
+    When hard_drop=False: invalid gaps are NOT filled, but also do NOT cause a symbol drop.
     """
     s = pd.to_numeric(series, errors="coerce").astype(float).copy()
     gaps = find_nan_gaps(s)

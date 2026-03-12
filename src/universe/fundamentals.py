@@ -834,7 +834,7 @@ def fetch_fundamentals_parallel(
                         stalled_polls == 1 or stalled_polls % 6 == 0
                     ):
                         logger.info(
-                            "Fundamentals warten auf Antworten: active=%d submitted=%d/%d "
+                            "Fundamentals waiting for responses: active=%d submitted=%d/%d "
                             "ok=%d failed=%d timeouts=%d.",
                             len(active),
                             submitted,

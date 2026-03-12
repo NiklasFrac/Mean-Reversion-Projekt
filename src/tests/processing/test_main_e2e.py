@@ -15,7 +15,7 @@ from processing.timebase import ensure_utc_index
 
 
 def _build_universe(tmp_root: Path) -> tuple[Path, Path, Path]:
-    # Struktur:
+    # Structure:
     # <tmp>/configs/config.yaml
     # <tmp>/backtest/data/raw_prices.pkl
     # <tmp>/backtest/data/raw_volume.pkl
@@ -24,7 +24,7 @@ def _build_universe(tmp_root: Path) -> tuple[Path, Path, Path]:
     cfg_dir.mkdir(parents=True, exist_ok=True)
     data_dir.mkdir(parents=True, exist_ok=True)
 
-    # Preise: 20 B-Tage, 3 Ticker
+    # prices: 20 business days, 3 tickers
     idx = pd.bdate_range("2020-01-01", periods=20)
     aaa = pd.Series(np.linspace(100.0, 119.0, len(idx)), index=idx)
     aaa.iloc[8] = np.nan
@@ -45,7 +45,7 @@ def _build_universe(tmp_root: Path) -> tuple[Path, Path, Path]:
     prices.to_pickle(p_prices)
     volumes.to_pickle(p_volume)
 
-    # Wichtig: relativer Pfad in YAML, da load_raw_prices_from_universe relativ globbt
+    # Important: relative path in YAML because load_raw_prices_from_universe globs relative paths
     cfg = cfg_dir / "config.yaml"
     cfg.write_text(
         "\n".join(
@@ -104,16 +104,16 @@ def test_main_e2e(
     fake.get_calendar = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom"))
     monkeypatch.setitem(sys.modules, "pandas_market_calendars", fake)
 
-    # **WICHTIG 1**: Ins tmp-Verzeichnis wechseln, damit relative Pfade aus der YAML greifen
+    # IMPORTANT 1: switch into the tmp directory so relative paths from the YAML resolve
     monkeypatch.chdir(tmp_path)
 
-    # **WICHTIG 2**: Erzwinge, dass genau diese Config benutzt wird (keine runs/configs/...).
+    # IMPORTANT 2: force exactly this config to be used (no runs/configs/...).
     monkeypatch.setenv("BACKTEST_CONFIG", str(cfg_path))
     monkeypatch.delenv("STRAT_CONFIG", raising=False)
-    # Ausfuehren (direkter Produktionspfad)
+    # Execute (direct production path)
     pipeline_main(cfg_path)  # run
 
-    # Artefakte
+    # artifacts
     out_pkl = tmp_path / "backtest" / "data" / "filled_data.pkl"
     out_removed = tmp_path / "backtest" / "data" / "filled_data_removed.pkl"
     out_diag = tmp_path / "backtest" / "data" / "filled_data.diag.json"
@@ -126,7 +126,7 @@ def test_main_e2e(
         and out_manifest.exists()
     )
 
-    # Inhalte pruefen
+    # Check contents
     df = pd.read_pickle(out_pkl)
     removed = pd.read_pickle(out_removed)
     assert list(sorted(df.columns)) == ["AAA", "CCC"]
@@ -140,7 +140,7 @@ def test_main_e2e(
     g_diag = golden_dir / "diag_golden.json"
     g_manifest = golden_dir / "manifest_golden.json"
 
-    # First-run Komfort: Goldens automatisch erzeugen, wenn sie fehlen
+    # first-run convenience: create goldens automatically if they are missing
     if update_golden or not g_diag.exists() or not g_manifest.exists():
         g_diag.parent.mkdir(parents=True, exist_ok=True)
         g_diag.write_text(json.dumps(masked_diag, indent=2), encoding="utf-8")

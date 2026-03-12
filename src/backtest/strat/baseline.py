@@ -29,6 +29,17 @@ def _estimate_beta_ols_with_intercept(y: pd.Series, x: pd.Series) -> float:
     )
 
 
+def _estimate_positive_beta_ols_with_intercept(
+    y: pd.Series, x: pd.Series
+) -> tuple[float | None, str | None]:
+    return _helpers.estimate_beta_ols_with_intercept_details(
+        y,
+        x,
+        ols_cls=OLS,
+        add_constant_fn=add_constant,
+    )
+
+
 def _rolling_zscore_past_only(
     spread: pd.Series, *, window: int, min_periods: int
 ) -> pd.Series:
@@ -216,6 +227,69 @@ def _positions_from_z(
     return out
 
 
+def _entry_intents_from_z(
+    z: pd.Series,
+    *,
+    entry_z: float,
+    stop_z: float,
+    test_start: pd.Timestamp,
+    entry_end: pd.Timestamp,
+    entry_gate: pd.Series | None = None,
+) -> pd.DataFrame:
+    idx = pd.DatetimeIndex(z.index)
+    rows: list[dict[str, Any]] = []
+    e = float(abs(entry_z))
+    s = float(abs(stop_z))
+    prev = float("nan")
+
+    for t in idx:
+        ts = pd.Timestamp(t)
+        if ts < test_start or ts > entry_end:
+            prev = float("nan")
+            continue
+
+        z_raw = z.get(t)
+        try:
+            zval = float(z_raw)
+        except Exception:
+            zval = float("nan")
+        if not np.isfinite(zval):
+            prev = float("nan")
+            continue
+
+        gate_ok = True
+        if entry_gate is not None:
+            try:
+                gate_raw = entry_gate.at[t]
+                gate_ok = True if pd.isna(gate_raw) else bool(gate_raw)
+            except Exception:
+                gate_ok = True
+
+        long_entry = (
+            gate_ok
+            and zval <= -e
+            and zval > -s
+            and (not np.isfinite(prev) or prev > -e)
+        )
+        short_entry = (
+            gate_ok
+            and zval >= e
+            and zval < s
+            and (not np.isfinite(prev) or prev < e)
+        )
+        if long_entry or short_entry:
+            rows.append(
+                {
+                    "signal_date": pd.Timestamp(ts),
+                    "signal": int(1 if long_entry else -1),
+                    "z_signal": float(zval),
+                }
+            )
+        prev = zval
+
+    return pd.DataFrame(rows)
+
+
 def _coerce_ts_like_index(ts: Any, idx: pd.DatetimeIndex) -> pd.Timestamp:
     return _helpers.coerce_ts_like_index(ts, idx)
 
@@ -393,7 +467,16 @@ class BaselineZScoreStrategy:
             ):
                 continue
 
-            beta_hat = _estimate_beta_ols_with_intercept(df_train["y"], df_train["x"])
+            beta_hat, beta_reason = _estimate_positive_beta_ols_with_intercept(
+                df_train["y"], df_train["x"]
+            )
+            if beta_hat is None:
+                logger.debug(
+                    "baseline: skipped %s due to invalid train beta (%s)",
+                    pair,
+                    beta_reason or "beta_estimation_failed",
+                )
+                continue
             beta_series = pd.Series(float(beta_hat), index=df.index, name="beta")
             spread = (df["y"] - beta_series * df["x"]).rename("spread")
             eval_index = df.index[(df.index >= test_start) & (df.index <= exit_end)]
@@ -437,19 +520,6 @@ class BaselineZScoreStrategy:
                 entry_z=entry_z,
                 exit_z=exit_z,
             )
-            pos_signal = _positions_from_z(
-                z,
-                entry_z=entry_z,
-                exit_z=exit_z,
-                stop_z=stop_z,
-                max_hold_days=pair_max_hold_days,
-                cooldown_days=cooldown_days,
-                test_start=test_start,
-                entry_end=entry_end,
-                allow_exit_after_end=bool(exit_end > entry_end),
-                entry_gate=markov_filter.entry_gate,
-            )
-
             tickers = _get_tickers_from_meta(data)
             if not tickers:
                 continue
@@ -475,26 +545,48 @@ class BaselineZScoreStrategy:
             if pair_z_window_as_volatility_window:
                 signal_cfg["volatility_window"] = int(pair_w_sig)
 
-            try:
-                trades_df = TradeBuilder.from_signals(
-                    signals=pos_signal,
-                    prices=df,
-                    beta=beta_series,
-                    capital=self.initial_capital,
-                    cfg=cfg_pair,
-                    adv_t1=float(adv_t1) if adv_t1 is not None else None,
-                    adv_t2=float(adv_t2) if adv_t2 is not None else None,
-                )
-            except Exception as e:
-                logger.debug("baseline: TradeBuilder failed for %s: %s", pair_key, e)
+            intents_df = _entry_intents_from_z(
+                z,
+                entry_z=entry_z,
+                stop_z=stop_z,
+                test_start=test_start,
+                entry_end=entry_end,
+                entry_gate=markov_filter.entry_gate,
+            )
+            if intents_df.empty:
                 continue
+            intents_df = intents_df.copy()
+            intents_df.insert(0, "pair", pair_key)
+            intents_df["entry_end"] = pd.Timestamp(entry_end)
+            intents_df["exit_end"] = pd.Timestamp(exit_end)
 
-            if isinstance(trades_df, pd.DataFrame) and not trades_df.empty:
-                orders_df = _trades_to_orders(trades_df)
-                results[pair] = {
-                    "trades": trades_df,
-                    "orders": orders_df,
-                    "markov_filter": markov_filter.diagnostics,
-                }
+            results[pair] = {
+                "intents": intents_df,
+                "state": {
+                    "pair_key": pair_key,
+                    "y_symbol": t1_sym,
+                    "x_symbol": t2_sym,
+                    "prices": df.copy(),
+                    "beta": beta_series.copy(),
+                    "z": z.copy(),
+                    "sigma": sigma_t.copy(),
+                    "entry_z": float(entry_z),
+                    "exit_z": float(exit_z),
+                    "stop_z": float(stop_z),
+                    "volatility_window": int(
+                        pair_w_sig
+                        if pair_z_window_as_volatility_window
+                        else int(signal_cfg.get("volatility_window", pair_w_sig))
+                    ),
+                    "max_hold_days": int(pair_max_hold_days),
+                    "cooldown_days": int(cooldown_days),
+                    "test_start": pd.Timestamp(test_start),
+                    "entry_end": pd.Timestamp(entry_end),
+                    "exit_end": pd.Timestamp(exit_end),
+                    "adv_t1": float(adv_t1) if adv_t1 is not None else None,
+                    "adv_t2": float(adv_t2) if adv_t2 is not None else None,
+                },
+                "markov_filter": markov_filter.diagnostics,
+            }
 
         return results

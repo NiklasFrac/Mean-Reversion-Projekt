@@ -7,17 +7,17 @@ def main():
     try:
         import exchange_calendars as xcals
     except Exception as e:
-        print("FEHLER: exchange_calendars nicht importierbar ->", e)
+        print("ERROR: exchange_calendars not importable ->", e)
         sys.exit(1)
 
     cal = xcals.get_calendar("XNYS")
     start, end = "2024-12-15", "2025-01-15"
     sessions = cal.sessions_in_range(start, end)
-    assert len(sessions) > 0, "Keine Handelstage im Intervall gefunden"
+    assert len(sessions) > 0, "No trading days found in the interval"
 
     # sanity checks
     christmas = dt.date(2024, 12, 25)
-    assert not cal.is_session(christmas), "Christmas sollte kein Handelstag sein"
+    assert not cal.is_session(christmas), "Christmas should not be a trading day"
     print(
         "OK:",
         cal.name,

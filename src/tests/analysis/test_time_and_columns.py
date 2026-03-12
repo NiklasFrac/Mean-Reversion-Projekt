@@ -12,19 +12,19 @@ def test_ensure_utc_index_duplicates_and_sort(caplog):
     out = ensure_utc_index(df)
     assert out.index.tz is None
     assert out.index.is_monotonic_increasing
-    # Keep='last' -> Wert 3 bleibt für 2024-01-02
+    # Keep='last' -> value 3 remains for 2024-01-02
     assert out.iloc[-1]["A"] == 3
 
 
 def test_select_price_columns_multiindex():
     arrays = [["A", "B"], ["open", "close"]]
     cols = pd.MultiIndex.from_product(arrays, names=["ticker", "field"])
-    # 2 Zeilen, 4 Spalten
+    # 2 rows, 4 columns
     df = pd.DataFrame([[1, 2, 3, 4], [5, 6, 7, 8]], columns=cols)
 
     prices = select_price_columns(df)
     assert list(prices.columns) == ["A", "B"]
-    assert prices.iloc[0].tolist() == [2, 4]  # close-Werte
+    assert prices.iloc[0].tolist() == [2, 4]  # close values
 
 
 def test_select_price_columns_long_format():

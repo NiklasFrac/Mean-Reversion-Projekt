@@ -13,8 +13,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-# ---------- Pfade robust auflösen ----------
-# Diese Datei liegt unter: src/backtest/tests/test_corp_actions_full.py
+# ---------- Resolve paths robustly ----------
+# This file lives under: src/backtest/tests/test_corp_actions_full.py
 # -> BASE = src/backtest/src
 BASE = Path(__file__).resolve().parents[1] / "src"
 CAB_PATH = BASE / "corp_actions_builder.py"
@@ -26,10 +26,10 @@ RUNNER_CANDIDATES = [
 
 def _import_by_path(mod_name: str, file_path: Path) -> types.ModuleType:
     if not file_path.exists():
-        raise FileNotFoundError(f"{file_path} nicht gefunden")
+        raise FileNotFoundError(f"{file_path} not found")
     spec = importlib.util.spec_from_file_location(mod_name, str(file_path))
     if spec is None or spec.loader is None:
-        raise ImportError(f"Kann Modul nicht laden: {file_path}")
+        raise ImportError(f"Cannot load module: {file_path}")
     mod = importlib.util.module_from_spec(spec)
     sys.modules[mod_name] = mod
     spec.loader.exec_module(mod)  # type: ignore
@@ -45,7 +45,7 @@ for cand in RUNNER_CANDIDATES:
         break
 if _runner_mod is None:
     raise FileNotFoundError(
-        "Kein Runner gefunden. Erwartet einen der folgenden Pfade:\n"
+        "No runner found. Expected one of the following paths:\n"
         + "\n".join(str(p) for p in RUNNER_CANDIDATES)
     )
 
@@ -72,22 +72,22 @@ def _read_ca(path: Path) -> pd.DataFrame:
 
 def _run_runner_pipeline(cfg: dict) -> None:
     """
-    Versucht zuerst runner_corp.run_corp_pipeline(cfg).
-    Falls nicht vorhanden, emuliert das Nötige via corp_actions_builder.
+    Tries runner_corp.run_corp_pipeline(cfg) first.
+    If unavailable, emulates the necessary parts via corp_actions_builder.
     """
     fn = getattr(_runner_mod, "run_corp_pipeline", None)
     if callable(fn):
-        # direkt den Runner benutzen – Rückgabewert nicht benötigt
+        # use the runner directly - return value is not needed
         fn(cfg)
         return
 
-    # Fallback: baue nur die corp_actions über den Builder (entspricht dem Kernschritt)
+    # Fallback: build only corp_actions via the builder (matches the core step)
     data = cfg.get("data", {}) or {}
     ca_path = data.get("corporate_actions_path")
     price_path = data.get("prices_path")
     if not ca_path or not price_path:
         raise AssertionError(
-            "cfg.data.corporate_actions_path / cfg.data.prices_path fehlt."
+            "cfg.data.corporate_actions_path / cfg.data.prices_path is missing."
         )
 
     cab.ensure_and_seed_corporate_actions_file(
@@ -111,17 +111,17 @@ def _run_runner_pipeline(cfg: dict) -> None:
 # ==============================================================================
 def test_offline_end_to_end_runner_corp(tmp_path: Path):
     """
-    Mini-Universum:
-      - SPLT: künstlicher 3:1-Split innerhalb des Fensters (Heuristik muss greifen).
-      - CONST: konstant, keine Events.
-      - ZDEL: konstant, aber über universe_meta delisted.
-    Erwartung: ≥1 Split + ≥1 Delisting im finalen CSV.
+    Mini universe:
+      - SPLT: artificial 3:1 split inside the window (heuristic must trigger).
+      - CONST: constant, no events.
+      - ZDEL: constant, but delisted via universe_meta.
+    Expectation: >=1 split + >=1 delisting in the final CSV.
     """
     ca_path = tmp_path / "corp_actions.csv"
     prices_path = tmp_path / "prices.pkl"
     umeta_path = tmp_path / "universe_meta.csv"
 
-    # Preisfenster
+    # price window
     idx = pd.bdate_range("2022-01-03", periods=500)
     base = np.linspace(90.0, 110.0, len(idx))
     splt = pd.Series(base, index=idx)
@@ -133,7 +133,7 @@ def test_offline_end_to_end_runner_corp(tmp_path: Path):
     prices = pd.DataFrame({"SPLT": splt, "CONST": const, "ZDEL": zdel}, index=idx)
     prices.to_pickle(prices_path)
 
-    # universe_meta mit Delist für ZDEL im Fenster
+    # universe_meta with a delist for ZDEL inside the window
     _write_universe_meta(
         umeta_path,
         [
@@ -158,7 +158,7 @@ def test_offline_end_to_end_runner_corp(tmp_path: Path):
         ],
     )
 
-    # Runner-Konfiguration: NUR offline (keine Vendoren)
+    # Runner configuration: OFFLINE only (no vendors)
     cfg = {
         "data": {
             "prices_path": str(prices_path),
@@ -166,7 +166,7 @@ def test_offline_end_to_end_runner_corp(tmp_path: Path):
             "corporate_actions_path": str(ca_path),
             "universe_meta": str(umeta_path),
             "auto_build_universe_meta": False,
-            "corp_actions_vendor": {},  # explizit leer
+            "corp_actions_vendor": {},  # explicitly empty
         },
         "corp_actions_seed": {
             "infer_splits": True,
@@ -179,20 +179,20 @@ def test_offline_end_to_end_runner_corp(tmp_path: Path):
     _run_runner_pipeline(cfg)
 
     ca = _read_ca(ca_path)
-    assert not ca.empty, "corp_actions.csv sollte Events enthalten."
+    assert not ca.empty, "corp_actions.csv should contain events."
     tcounts = ca["type"].str.lower().value_counts()
-    assert tcounts.get("split", 0) >= 1, "Erwarte ≥1 Split-Event (Heuristik)."
-    assert tcounts.get("delist", 0) >= 1, "Erwarte ≥1 Delisting-Event (universe_meta)."
+    assert tcounts.get("split", 0) >= 1, "Expected >=1 split event (heuristic)."
+    assert tcounts.get("delist", 0) >= 1, "Expected >=1 delisting event (universe_meta)."
 
 
 # ==============================================================================
-# 2) OPTIONAL: ONLINE-INTEGRATION (yfinance) – wird bei Netzproblemen geskippt
+# 2) OPTIONAL: ONLINE INTEGRATION (yfinance) - skipped on network issues
 # ==============================================================================
 @pytest.mark.integration
 def test_online_yfinance_small_universe(tmp_path: Path):
     """
-    Kleiner YF-Check (AAPL/MSFT/TSLA). Erwartet mind. 1 Dividend ODER 1 Split.
-    Skips automatisch, wenn yfinance/Internet nicht funktioniert.
+    Small YF check (AAPL/MSFT/TSLA). Expects at least 1 dividend OR 1 split.
+    Skips automatically if yfinance/internet is unavailable.
     """
     try:
         import yfinance as yf  # noqa
@@ -203,9 +203,9 @@ def test_online_yfinance_small_universe(tmp_path: Path):
         ):
             _ = yf.Ticker("AAPL").history(period="5d")
     except Exception:
-        pytest.skip("yfinance/Internet nicht erreichbar – Test wird übersprungen.")
+        pytest.skip("yfinance/internet unavailable - skipping test.")
 
-    # Preise dienen nur zur Fensterdefinition
+    # Prices only define the window
     idx = pd.bdate_range("2022-01-03", "2025-06-01")
     prices = pd.DataFrame({"AAPL": 150.0, "MSFT": 300.0, "TSLA": 200.0}, index=idx)
     pkl_path = tmp_path / "prices_online.pkl"
@@ -221,21 +221,21 @@ def test_online_yfinance_small_universe(tmp_path: Path):
     )
     ca = _read_ca(ca_path)
     if ca.empty:
-        pytest.skip("Vendor lieferte aktuell keine Actions – zeit-/netzabhängig.")
+        pytest.skip("Vendor currently returned no actions - time/network dependent.")
     tcounts = ca["type"].str.lower().value_counts()
     assert (tcounts.get("dividend", 0) > 0) or (tcounts.get("split", 0) > 0), (
-        "Erwarte mind. 1 Dividend ODER 1 Split im Fenster."
+        "Expect at least 1 dividend OR 1 split in the window."
     )
 
 
 # ==============================================================================
-# 3) SCHNELLER OFFLINE-BUILDER-UNITTEST (ohne Runner)
+# 3) FAST OFFLINE BUILDER UNIT TEST (without runner)
 # ==============================================================================
 def test_offline_builder_minimal(tmp_path: Path):
     """
-    Reiner Builder-Test (ohne Runner):
-      - Heuristik-Split für SPLT
-      - Delisting ZDEL via universe_meta
+    Pure builder test (without runner):
+      - heuristic split for SPLT
+      - delisting for ZDEL via universe_meta
     """
     ca_path = tmp_path / "corp_actions.csv"
     prices_path = tmp_path / "prices.pkl"
@@ -288,7 +288,7 @@ def test_offline_builder_minimal(tmp_path: Path):
     )
 
     ca = _read_ca(ca_path)
-    assert not ca.empty, "corp_actions.csv sollte Events enthalten."
+    assert not ca.empty, "corp_actions.csv should contain events."
     types_ = ca["type"].str.lower().value_counts()
-    assert types_.get("split", 0) >= 1, "Erwarte ≥1 heuristischen Split."
-    assert types_.get("delist", 0) >= 1, "Erwarte ≥1 Delisting aus universe_meta."
+    assert types_.get("split", 0) >= 1, "Expected >=1 heuristic split."
+    assert types_.get("delist", 0) >= 1, "Expected >=1 delisting from universe_meta."

@@ -31,6 +31,7 @@ def test_prepare_pairs_with_prefilter_and_adv(monkeypatch: pytest.MonkeyPatch) -
         "evaluate_pair_cointegration",
         lambda *_args, **_kwargs: {
             "passed": True,
+            "beta": 1.2,
             "z_window": 8,
             "max_hold_days": 16,
             "half_life": 8.0,

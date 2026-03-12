@@ -1,13 +1,13 @@
 # src/backtest/research/overfit.py
 """
-Overfit-Analyse (Config-unabhängig)
+Overfit analysis (config-independent)
 
 Features:
-- Pure, deterministische Funktionen ohne globale Zustände
-- Robuste Numerik (NaN/Inf-Handling, Schutz vor Division durch 0)
-- Mypy-/Ruff-saubere Typisierung und API
-- CPCV-PBO, (deflated) Sharpe, Memmel-Teststatistik
-- Defensive, tolerante I/O (CSV/Parquet) ohne Abhängigkeit von config.yaml
+- Pure, deterministic functions without global state
+- Robust numerics (NaN/Inf handling, protection against division by zero)
+- Mypy-/Ruff-clean typing and API
+- CPCV-PBO, (deflated) Sharpe, Memmel test statistic
+- Defensive, tolerant I/O (CSV/Parquet) without depending on config.yaml
 """
 
 from __future__ import annotations
@@ -114,11 +114,11 @@ FloatArray = NDArray[np.floating[Any]]
 IntArray = NDArray[np.integer[Any]]
 
 
-# ---- Kleine, robuste Utils -----------------------------------------------------
+# ---- Small, robust utils -------------------------------------------------------
 
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
-    """Konvertiert robust zu float, returnt default bei Fehlern/Nicht-Finite."""
+    """Robustly converts to float and returns default on errors/non-finite values."""
     try:
         v = float(x)
     except Exception:
@@ -127,7 +127,7 @@ def _safe_float(x: Any, default: float = 0.0) -> float:
 
 
 def _finite_or_default(a: FloatArray, default: float = 0.0) -> FloatArray:
-    """Ersetzt Nicht-Finite durch default."""
+    """Replaces non-finite values with default."""
     out = np.array(a, dtype=float, copy=True)
     mask = ~np.isfinite(out)
     if mask.any():
@@ -136,16 +136,16 @@ def _finite_or_default(a: FloatArray, default: float = 0.0) -> FloatArray:
 
 
 def _to_float_array(seq: Iterable[float] | FloatArray) -> FloatArray:
-    """Konvertiert nach FloatArray; Non-Finites -> 0.0."""
+    """Converts to FloatArray; non-finite values -> 0.0."""
     arr = np.asarray(list(seq) if not isinstance(seq, np.ndarray) else seq, dtype=float)
     return _finite_or_default(arr, default=0.0)
 
 
-# ---- Kennzahlen / Tests --------------------------------------------------------
+# ---- Metrics / tests -----------------------------------------------------------
 
 
 def _returns_from_equity(equity: pd.Series) -> pd.Series:
-    """Robuste Returns (pct_change) aus Equity."""
+    """Robust returns (pct_change) from equity."""
     eq = pd.to_numeric(equity, errors="coerce").dropna()
     if eq.empty:
         return pd.Series(dtype=float)
@@ -155,8 +155,8 @@ def _returns_from_equity(equity: pd.Series) -> pd.Series:
 
 def _sharpe_ratio_from_returns(returns: pd.Series, *, trading_days: int = 252) -> float:
     """
-    Annualisierte Sharpe-Ratio aus Returns-Serie.
-    Nicht-finite Werte werden entfernt; sd==0 -> 0.0.
+    Annualized Sharpe ratio from a returns series.
+    Non-finite values are removed; sd==0 -> 0.0.
     """
     r = pd.to_numeric(returns, errors="coerce").dropna()
     if r.empty:
@@ -170,8 +170,8 @@ def _sharpe_ratio_from_returns(returns: pd.Series, *, trading_days: int = 252) -
 
 def _memmel_t_stat(sr: float, n: int, *, skew: float = 0.0, kurt: float = 3.0) -> float:
     """
-    Memmel-angepasste t-Statistik für die Sharpe-Ratio.
-    Nimmt optional Schiefe und Kurtosis der Renditen auf.
+    Memmel-adjusted t-statistic for the Sharpe ratio.
+    Optionally includes skewness and kurtosis of returns.
     """
     if n <= 1 or not math.isfinite(sr):
         return 0.0
@@ -183,7 +183,7 @@ def _p_one_sided_from_sr(
     sr: float, n: int, *, skew: float = 0.0, kurt: float = 3.0
 ) -> float:
     """
-    Einseitige p-Value fuer SR>0 unter t-Verteilung mit Memmel-Korrektur.
+    One-sided p-value for SR>0 under a t-distribution with Memmel correction.
     Clipped in [0, 1].
     """
     t_val = _memmel_t_stat(sr, n, skew=skew, kurt=kurt)
@@ -193,7 +193,7 @@ def _p_one_sided_from_sr(
 
 
 def _sample_skew_kurtosis(returns: pd.Series) -> tuple[float, float]:
-    """Skewness/Kurtosis (Pearson, nicht excess) aus Returns."""
+    """Skewness/kurtosis (Pearson, not excess) from returns."""
     r = pd.to_numeric(returns, errors="coerce").dropna().to_numpy(dtype=float)
     n = int(r.size)
     if n < 3:
@@ -271,19 +271,19 @@ def _deflated_sharpe_ratio(
     return float(np.clip(_norm_cdf(float(z)), 0.0, 1.0))
 
 
-# ---- Öffentliche API -----------------------------------------------------------
+# ---- Public API ----------------------------------------------------------------
 
 
 @dataclass(frozen=True, slots=True)
 class OverfitSummary:
     """
-    Kompakter Report der Overfit-Analyse.
-    - dsr:    Deflated Sharpe (0..1, hoeher = glaubwuerdiger)
-    - memmel_p_one_sided: p(SR<=0) einseitig mit Memmel-Korrektur
-    - n_test_obs: Anzahl der OOS-PnL-Stuetzstellen
-    - candidates: Anzahl getesteter Kandidaten (fuer Deflation)
-    - pbo:    Probability of Backtest Overfitting aus CPCV
-    - n_folds: Anzahl der CPCV-Folds
+    Compact overfit analysis report.
+    - dsr:    Deflated Sharpe (0..1, higher = more credible)
+    - memmel_p_one_sided: one-sided p(SR<=0) with Memmel correction
+    - n_test_obs: number of OOS PnL observations
+    - candidates: number of tested candidates (for deflation)
+    - pbo:    Probability of Backtest Overfitting from CPCV
+    - n_folds: number of CPCV folds
     """
 
     dsr: float
@@ -315,7 +315,7 @@ def summarize_overfit_from_equity(
     trading_days: int = 252,
 ) -> OverfitSummary:
     """
-    Bildet SR/DSR aus einer TEST-/OOS-Equitykurve und optionalen Kandidaten-SRs.
+    Computes SR/DSR from a TEST/OOS equity curve and optional candidate SRs.
     """
     equity = pd.to_numeric(equity_curve_test_only, errors="coerce").dropna()
     rets = _returns_from_equity(equity)
@@ -370,8 +370,8 @@ def pbo_cpcv(is_scores: FloatArray, oos_scores: FloatArray) -> float:
       - Compute its OOS rank percentile w in (0,1).
       - Lambda = logit(w). PBO = P(lambda < 0) across folds.
 
-    Erwartet Arrays der Form (n_folds, n_models).
-    NaNs/Inf werden konservativ zu -inf gemappt (d.h. niemals 'beste' Wahl).
+    Expects arrays of shape (n_folds, n_models).
+    NaNs/Inf are conservatively mapped to -inf (i.e. never the "best" choice).
     """
     if is_scores.shape != oos_scores.shape or is_scores.size == 0:
         return 0.0
@@ -404,7 +404,7 @@ def pbo_cpcv(is_scores: FloatArray, oos_scores: FloatArray) -> float:
 
 def write_overfit_report(path: Path, summary: OverfitSummary) -> Path:
     """
-    Schreibt einen kompakten JSON-Report.
+    Writes a compact JSON report.
     """
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -419,7 +419,7 @@ def write_overfit_report(path: Path, summary: OverfitSummary) -> Path:
 
 def _read_frame(p: Path) -> pd.DataFrame:
     """
-    Liest CSV/Parquet tolerant. Nicht-existent oder fehlerhaft -> leeres DF.
+    Tolerantly reads CSV/Parquet. Missing or invalid files -> empty DF.
     """
     try:
         if not p.exists():
@@ -448,12 +448,12 @@ def analyze_bo_trials(
     **_: Any,
 ) -> Path:
     """
-    - Akzeptiert Pfad ODER Liste von Pfaden (CSV/Parquet)
-    - Kandidaten: Spalten 'score' oder 'sharpe'
-    - Optional: CPCV-Felder -> PBO ('fold', 'is_sharpe/oos_sharpe' bzw. 'is_score/oos_score')
-               + 'model_id' | 'candidate' | 'name' fuer Pivot/Grouping
-    - Optional: component/metric Filter, um Stages nicht zu mischen
-    - Schreibt JSON-Report (kompatibel zum Runner)
+    - Accepts a path OR a list of paths (CSV/Parquet)
+    - Candidates: columns 'score' or 'sharpe'
+    - Optional: CPCV fields -> PBO ('fold', 'is_sharpe/oos_sharpe' or 'is_score/oos_score')
+               + 'model_id' | 'candidate' | 'name' for pivoting/grouping
+    - Optional: component/metric filters to avoid mixing stages
+    - Writes a JSON report (compatible with the runner)
     """
     if isinstance(trials_csv_or_list, (str, Path)):
         paths = [Path(trials_csv_or_list)]
@@ -522,7 +522,7 @@ def analyze_bo_trials(
                         df_use = df_use[df_use[metric_col].astype(str) == meta_metric]
                         meta_warnings.append("metric_ambiguous_defaulted")
 
-            # Kandidaten (Score/Sharpe)
+            # Candidates (score/Sharpe)
             score_col = cols.get("score") or cols.get("sharpe")
             model_col = (
                 cols.get("model_id") or cols.get("candidate") or cols.get("name")

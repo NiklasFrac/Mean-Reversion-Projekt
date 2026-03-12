@@ -10,7 +10,7 @@ from analysis.atomic_io import save_results
 def test_save_results_writes_all(tmp_path: Path):
     out = tmp_path / "pairs.pkl"
     df = pd.DataFrame([{"pair": "A-B", "mean_corr": 0.9, "pval": 0.01}])
-    # timmings explizit mitgeben, weil der Test darauf prüft
+    # pass timings explicitly because the test checks for them
     meta = {"analysis_schema_version": 1, "thresholds": {"corr": 0.8}, "timings": {}}
     save_results(df, out, meta)
 
@@ -18,5 +18,5 @@ def test_save_results_writes_all(tmp_path: Path):
     assert out.with_suffix(".csv").exists()
 
     m = json.loads(out.with_suffix(".meta.json").read_text(encoding="utf-8"))
-    # "golden-ish": Schema-Keys anstatt exakter Werte
+    # "golden-ish": schema keys instead of exact values
     assert "thresholds" in m and "timings" in m

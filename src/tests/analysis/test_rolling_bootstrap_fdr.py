@@ -28,11 +28,11 @@ def test_rolling_pair_metrics_fast_nonempty_and_pct_order():
     )
     assert not df_sum.empty
     assert "A-B" in set(df_sum["pair"])
-    # A-B sollte höhere mean_corr als A-C/B-C haben
+    # A-B should have higher mean_corr than A-C/B-C
     ab = float(df_sum.loc[df_sum["pair"] == "A-B", "mean_corr"].iloc[0])
     rest = float(df_sum.loc[df_sum["pair"] != "A-B", "mean_corr"].mean())
     assert ab > rest
-    # window_cors liefert pro Paar Arrays
+    # window_cors returns arrays per pair
     assert "A-B" in per_win and per_win["A-B"].ndim == 1
 
 

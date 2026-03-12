@@ -39,21 +39,21 @@ def main() -> None:
         (adv_p, "ADV-Map"),
     ]:
         if pth.exists():
-            print(f"{GREEN} {name} gefunden: {pth}")
+            print(f"{GREEN} {name} found: {pth}")
         else:
-            print(f"{RED} {name} fehlt: {pth}")
+            print(f"{RED} {name} missing: {pth}")
             ok = False
     if not ok:
-        print(f"\n{RED} Abbruch: Artefakte fehlen.")
+        print(f"\n{RED} Abort: artifacts are missing.")
         return
 
-    # --- Laden
+    # --- Load
     diag = load_json(diag_p)
     man = load_json(man_p)
     df_exec = pd.read_parquet(exec_p)
     adv_map = pd.read_pickle(adv_p)
 
-    # --- Flags aus Diagnostik/Manifest
+    # --- Flags from diagnostics/manifest
     schema_version = int(diag.get("schema_version", -1))
     causal_only_diag = bool(((diag.get("filling") or {}).get("causal_only", False)))
     man_extra = (man.get("extra") or {}) if isinstance(man, dict) else {}
@@ -68,7 +68,7 @@ def main() -> None:
         else 0
     )
 
-    print("\nSchalter")
+    print("\nFlags")
     print(
         f"{GREEN if schema_version == 3 else YELLOW} Diagnostics.schema_version = {schema_version}"
     )
@@ -80,8 +80,8 @@ def main() -> None:
     )
     print(f"{GREEN} Diagnostics.events.summary.total_events = {total_events}")
 
-    # --- Methoden-Labels kontrollieren (keine non-kausalen Fills)
-    # Wir schauen in exec_diag
+    # --- Check method labels (no non-causal fills)
+    # Inspect exec_diag
     violations = []
     d = diag.get("exec_diag", {})
     for sym, info in d.items():
@@ -97,17 +97,17 @@ def main() -> None:
             ):
                 violations.append(("exec_diag", sym, label))
     if violations:
-        print(f"\n{RED} Non-kausale Fill-Methoden gefunden (causal_only=true):")
+        print(f"\n{RED} Found non-causal fill methods (causal_only=true):")
         for trk, sym, lab in violations[:20]:
             print(f"   - {trk}:{sym}: {lab}")
     else:
         print(
-            f"\n{GREEN} Keine non-kausalen Fill-Methoden etikettiert (bei causal_only=true)."
+            f"\n{GREEN} No non-causal fill methods labeled (with causal_only=true)."
         )
 
-    # --- Stichproben-Test: gefuellte Stellen duerfen nicht vom rechten Nachbarn abhaengen
-    # Heuristik: Wenn causal_only, dann ist Fill=ffill -> Fuellwert = letzter gueltiger Wert links.
-    # Wir picken 10 Symbole und pruefen zufaellig 30 Zeitpunkte, ob NA->Wert Spruenge plausibel sind.
+    # --- Sample test: filled positions must not depend on the right neighbor
+    # Heuristic: if causal_only, fill=ffill -> fill value = last valid value on the left.
+    # Sample 10 symbols and randomly check 30 timestamps for plausible NA->value jumps.
     import random
 
     random.seed(7)
@@ -117,16 +117,16 @@ def main() -> None:
     for sym in probe_syms:
         s = pd.to_numeric(df_exec[sym], errors="coerce").astype(float)
         isnan = s.isna().to_numpy()
-        # finde Uebergaenge von NA -> Wert (potenziell gefuellt)
+        # Find transitions from NA -> value (potentially filled)
         trans = np.where(isnan[:-1] & (~isnan[1:]))[0]
         pick = trans[:30]
         for idx in pick:
-            # Uebergang NaN (idx) -> Wert (idx+1)
+            # Transition NaN (idx) -> value (idx+1)
             if idx - 1 < 0 or idx + 1 >= len(s):
                 continue
             checks += 1
-            left_val = s.iloc[idx - 1]  # letzter gueltiger links
-            filled_val = s.iloc[idx + 1]  # der neu gefuellte Wert
+            left_val = s.iloc[idx - 1]  # last valid value on the left
+            filled_val = s.iloc[idx + 1]  # newly filled value
             if pd.notna(left_val) and pd.notna(filled_val):
                 if not np.isclose(
                     float(left_val), float(filled_val), rtol=0.0, atol=1e-12
@@ -136,18 +136,18 @@ def main() -> None:
     if causal_only_diag:
         if suspicious == 0:
             print(
-                f"{GREEN} Stichprobe (ffill-Konsistenz) sauber: 0 Abweichungen in {checks} Checks."
+                f"{GREEN} Sample (ffill consistency) clean: 0 deviations across {checks} checks."
             )
         else:
             print(
-                f"{RED} ffill-Konsistenz verletzt: {suspicious} Abweichungen in {checks} Checks."
+                f"{RED} ffill consistency violated: {suspicious} deviations across {checks} checks."
             )
 
-    # --- ADV-Map: plausibel & keine bfill-Spuren (indirekt ueber Manifest abgedeckt)
+    # --- ADV map: plausible and no bfill traces (indirectly covered by the manifest)
     if isinstance(adv_map, dict) and len(adv_map) > 0:
-        print(f"{GREEN} ADV-Map geladen (|symbols|={len(adv_map)}).")
+        print(f"{GREEN} ADV map loaded (|symbols|={len(adv_map)}).")
     else:
-        print(f"{YELLOW} ADV-Map leer oder inkonsistent.")
+        print(f"{YELLOW} ADV map empty or inconsistent.")
 
     hard_fail = (
         (not ok)
@@ -155,10 +155,10 @@ def main() -> None:
         or (causal_only_diag and suspicious > 0)
     )
     if hard_fail:
-        print(f"\nErgebnis: {RED} CAUSALITY GUARD **NICHT** bestanden.")
+        print(f"\nResult: {RED} CAUSALITY GUARD **FAILED**.")
     else:
         print(
-            f"\nErgebnis: {GREEN} CAUSALITY GUARD bestanden - strikt kausale Fuellung aktiv und konsistent."
+            f"\nResult: {GREEN} CAUSALITY GUARD passed - strictly causal filling is active and consistent."
         )
 
 

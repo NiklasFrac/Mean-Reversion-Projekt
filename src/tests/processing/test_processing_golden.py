@@ -10,12 +10,12 @@ def make_df():
     a = pd.Series(np.linspace(100, 120, len(idx)), index=idx)
     b = pd.Series(np.linspace(50, 60, len(idx)), index=idx)
 
-    # Lücken
-    a.iloc[5:8] = np.nan  # kurze Lücke
-    b.iloc[10:25] = np.nan  # lange Lücke -> sollte droppen bei max_gap=12
+    # Gaps
+    a.iloc[5:8] = np.nan  # short gap
+    b.iloc[10:25] = np.nan  # long gap -> should drop at max_gap=12
 
     # Nonpositive prices are invalid and cause a drop; keep this test focused on filling/outliers.
-    a.iloc[30] = a.iloc[29] * 10  # Outlier -> wird genullt (NaN) durch Scrub
+    a.iloc[30] = a.iloc[29] * 10  # outlier -> nulled out (NaN) by scrub
 
     return pd.DataFrame({"A": a, "B": b})
 
@@ -37,16 +37,16 @@ def test_golden_invariants():
             "use_log_returns": True,
         },
     )
-    # B sollte wegen langer Lücke droppen
+    # B should drop because of the long gap
     assert "B" in removed
     assert "A" in filled.columns
 
-    # Qualitätsinvarianten
+    # Quality invariants
     checks = validate_prices_wide(filled)["checks"]
     assert checks["nonpositive_prices"] == 0
     assert checks["duplicate_index"] == 0
     assert bool(checks["monotonic_index"]) is True
 
-    # Längste Lücke A <= max_gap nach Füllung
+    # Longest gap for A <= max_gap after filling
     a = filled["A"]
     assert a.isna().sum() == 0 or a.isna().sum() <= len(a) * 0.3

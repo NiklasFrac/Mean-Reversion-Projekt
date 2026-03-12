@@ -21,7 +21,7 @@ def test_load_raw_prices_from_universe_with_wide_and_pivot(tmp_path: Path, monke
     vol = pd.DataFrame({"AAA": [10] * 5, "BBB": [20] * 5}, index=idx)
     vol.to_pickle(data_dir / "raw_volume.pkl")
 
-    # WICHTIG: _discover nutzt Path().glob relativ zum CWD -> ins tmp wechseln & RELATIV übergeben
+    # IMPORTANT: _discover uses Path().glob relative to CWD -> switch into tmp and pass the path RELATIVELY
     monkeypatch.chdir(tmp_path)
     prices, volume, used = load_raw_prices_from_universe(Path("universe"))
     assert set(prices.columns) == {"AAA", "BBB"}
@@ -30,7 +30,7 @@ def test_load_raw_prices_from_universe_with_wide_and_pivot(tmp_path: Path, monke
 
 
 def test__load_any_prices_pivot_from_long(tmp_path: Path):
-    # long-form (ts, ticker, close) wird zu wide gepivotet
+    # long-form (ts, ticker, close) is pivoted to wide
     idx = pd.date_range("2020-01-01", periods=3, tz="UTC")
     df_long = pd.DataFrame(
         {

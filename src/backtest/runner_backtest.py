@@ -6,7 +6,7 @@ import logging
 import shutil
 import tempfile
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Mapping, cast
 
@@ -39,6 +39,7 @@ from backtest.run.train_only import (
 )
 from backtest.utils.run.trades import (
     _apply_global_positions_ledger,
+    _collect_portfolio_intents,
     _portfolio_from_trades,
 )
 from backtest.run.window_execution import (
@@ -100,6 +101,7 @@ class SingleRunArtifacts:
     test_equity: pd.Series
     test_summary: dict[str, Any]
     train_refit: TrainRefitArtifacts | None
+    portfolio: dict[str, Any] = field(default_factory=dict)
 
     @property
     def n_pairs(self) -> int:
@@ -139,6 +141,19 @@ def _write_debug_window(
     _json_dump(debug_out / "config_effective.json", art.cfg_eff)
     art.stats.to_csv(debug_out / "stats.csv", index=False)
     art.trades.to_csv(debug_out / "trades.csv", index=False)
+    entry_intents = art.stats.attrs.get("entry_intents_df")
+    if not isinstance(entry_intents, pd.DataFrame) or entry_intents.empty:
+        if (
+            isinstance(art.raw_trades, pd.DataFrame)
+            and not art.raw_trades.empty
+            and "signal_date" in art.raw_trades.columns
+        ):
+            entry_intents = art.raw_trades
+    if isinstance(entry_intents, pd.DataFrame) and not entry_intents.empty:
+        entry_intents.to_csv(debug_out / "entry_intents.csv", index=False)
+    state_transitions = art.stats.attrs.get("state_transitions_df")
+    if isinstance(state_transitions, pd.DataFrame) and not state_transitions.empty:
+        state_transitions.to_csv(debug_out / "state_transitions.csv", index=False)
     if isinstance(art.orders, pd.DataFrame) and not art.orders.empty:
         art.orders.to_csv(debug_out / "orders.csv", index=False)
     if splits is not None:
@@ -232,6 +247,34 @@ def _run_optional_overfit(
         logger.warning("Overfit analysis failed.", exc_info=True)
 
 
+def _portfolio_has_intents(portfolio: Mapping[str, Any] | None) -> bool:
+    intents = _collect_portfolio_intents(portfolio)
+    return isinstance(intents, pd.DataFrame) and not intents.empty
+
+
+def _namespace_intent_portfolio(
+    portfolio: Mapping[str, Any] | None,
+    *,
+    wf_i: int,
+) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    prefix = f"WF-{int(wf_i):03d}::"
+    for key, meta in (portfolio or {}).items():
+        if not isinstance(meta, Mapping):
+            continue
+        meta_local = dict(meta)
+        intents = meta.get("intents")
+        if isinstance(intents, pd.DataFrame):
+            meta_local["intents"] = intents.copy()
+        state = meta.get("state")
+        if isinstance(state, Mapping):
+            state_local = dict(state)
+            state_local["window_id"] = int(wf_i)
+            meta_local["state"] = state_local
+        out[f"{prefix}{key}"] = meta_local
+    return out
+
+
 def _run_once(
     *,
     cfg_eff: dict[str, Any],
@@ -277,7 +320,11 @@ def _run_once(
     )
     stats = window_run.stats
     trades = window_run.trades
-    raw_trades = window_run.raw_trades if return_raw_trades else pd.DataFrame()
+    raw_trades = (
+        window_run.raw_trades
+        if return_raw_trades or debug_out is not None
+        else pd.DataFrame()
+    )
     eq = _equity_from_stats(stats)
     test_summary_df = summarize_stats(eq, trades_df=trades)
     test_summary = (
@@ -311,6 +358,7 @@ def _run_once(
         test_equity=eq,
         test_summary=test_summary,
         train_refit=train_refit,
+        portfolio=getattr(window_run, "portfolio", {}) or {},
     )
 
     if debug_out is not None:
@@ -449,6 +497,9 @@ def run(cfg: dict[str, Any], *, out_dir: Path, quick: bool = False) -> dict[str,
         )
 
     carry_trades_parts: list[pd.DataFrame] = []
+    carry_intent_parts: list[pd.DataFrame] = []
+    carry_intent_portfolio: dict[str, Any] = {}
+    use_global_intent_sim = False
     wf_sizing_params: dict[int, dict[str, float]] = {}
     global_test_start = pd.Timestamp(windows[0].test_start)
     global_test_end = pd.Timestamp(windows[-1].test_end)
@@ -535,7 +586,17 @@ def run(cfg: dict[str, Any], *, out_dir: Path, quick: bool = False) -> dict[str,
                 else:
                     cap_end = cap_start
 
-            if isinstance(art.raw_trades, pd.DataFrame) and not art.raw_trades.empty:
+            if _portfolio_has_intents(art.portfolio):
+                use_global_intent_sim = True
+                carry_intent_portfolio.update(
+                    _namespace_intent_portfolio(art.portfolio, wf_i=wf_i)
+                )
+                intents_raw = _collect_portfolio_intents(art.portfolio)
+                if isinstance(intents_raw, pd.DataFrame) and not intents_raw.empty:
+                    intents_raw = intents_raw.copy()
+                    intents_raw.insert(0, "wf_i", wf_i)
+                    carry_intent_parts.append(intents_raw)
+            elif isinstance(art.raw_trades, pd.DataFrame) and not art.raw_trades.empty:
                 raw = art.raw_trades.copy()
                 raw.insert(0, "wf_i", wf_i)
                 carry_trades_parts.append(raw)
@@ -578,39 +639,46 @@ def run(cfg: dict[str, Any], *, out_dir: Path, quick: bool = False) -> dict[str,
                 df_cv.insert(0, "wf_i", wf_i)
                 cv_frames.append(df_cv)
 
-    carry_trades_df = (
-        pd.concat(carry_trades_parts, ignore_index=True)
-        if carry_trades_parts
-        else pd.DataFrame()
-    )
-    carry_trades_df, blocked_df, ledger_report = _apply_global_positions_ledger(
-        carry_trades_df
-    )
-
-    borrow_ctx_local = build_borrow_context(cfg_base)
-    bt_cfg_local = (
-        cfg_base.get("backtest", {})
-        if isinstance(cfg_base.get("backtest"), dict)
-        else {}
-    )
-    carry_trades_df, stateful_report = rescale_trades_stateful(
-        carry_trades_df,
-        price_data=_as_price_map(prices),
-        initial_capital=float(bt0.get("initial_capital", 1_000_000.0)),
-        wf_params=wf_sizing_params,
-        borrow_ctx=borrow_ctx_local,
-        settlement_lag_bars=int(bt_cfg_local.get("settlement_lag_bars", 0) or 0),
-    )
-
-    if debug_root is not None:
-        _json_dump(debug_root / "walkforward_ledger_report.json", ledger_report)
-        _json_dump(debug_root / "walkforward_stateful_report.json", stateful_report)
-        if blocked_df is not None and not blocked_df.empty:
-            blocked_df.to_csv(
-                debug_root / "walkforward_blocked_trades.csv", index=False
+    if use_global_intent_sim:
+        carry_portfolio = dict(carry_intent_portfolio)
+        if debug_root is not None and carry_intent_parts:
+            pd.concat(carry_intent_parts, ignore_index=True).to_csv(
+                debug_root / "walkforward_entry_intents.csv", index=False
             )
+    else:
+        carry_trades_df = (
+            pd.concat(carry_trades_parts, ignore_index=True)
+            if carry_trades_parts
+            else pd.DataFrame()
+        )
+        carry_trades_df, blocked_df, ledger_report = _apply_global_positions_ledger(
+            carry_trades_df
+        )
 
-    carry_portfolio = _portfolio_from_trades(carry_trades_df)
+        borrow_ctx_local = build_borrow_context(cfg_base)
+        bt_cfg_local = (
+            cfg_base.get("backtest", {})
+            if isinstance(cfg_base.get("backtest"), dict)
+            else {}
+        )
+        carry_trades_df, stateful_report = rescale_trades_stateful(
+            carry_trades_df,
+            price_data=_as_price_map(prices),
+            initial_capital=float(bt0.get("initial_capital", 1_000_000.0)),
+            wf_params=wf_sizing_params,
+            borrow_ctx=borrow_ctx_local,
+            settlement_lag_bars=int(bt_cfg_local.get("settlement_lag_bars", 0) or 0),
+        )
+
+        if debug_root is not None:
+            _json_dump(debug_root / "walkforward_ledger_report.json", ledger_report)
+            _json_dump(debug_root / "walkforward_stateful_report.json", stateful_report)
+            if blocked_df is not None and not blocked_df.empty:
+                blocked_df.to_csv(
+                    debug_root / "walkforward_blocked_trades.csv", index=False
+                )
+
+        carry_portfolio = _portfolio_from_trades(carry_trades_df)
     cfg_global = deepcopy(cfg_base)
     cfg_global.setdefault("backtest", {})
     bt_global = (
@@ -672,6 +740,22 @@ def run(cfg: dict[str, Any], *, out_dir: Path, quick: bool = False) -> dict[str,
         pd.DataFrame(window_rows).to_csv(
             debug_root / "test_window_summary_debug.csv", index=False
         )
+        entry_intents_global = carry_stats.attrs.get("entry_intents_df")
+        if (
+            isinstance(entry_intents_global, pd.DataFrame)
+            and not entry_intents_global.empty
+        ):
+            entry_intents_global.to_csv(
+                debug_root / "walkforward_entry_intents_global.csv", index=False
+            )
+        state_transitions_global = carry_stats.attrs.get("state_transitions_df")
+        if (
+            isinstance(state_transitions_global, pd.DataFrame)
+            and not state_transitions_global.empty
+        ):
+            state_transitions_global.to_csv(
+                debug_root / "walkforward_state_transitions.csv", index=False
+            )
         if isinstance(carry_trades, pd.DataFrame) and not carry_trades.empty:
             carry_trades.to_csv(debug_root / "walkforward_trades.csv", index=False)
 

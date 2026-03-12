@@ -38,7 +38,9 @@ def test_baseline_strategy_runs_and_outputs_expected_structure():
     strat = BaselineZScoreStrategy(cfg, borrow_ctx=None)
     out = strat(pairs)
     assert isinstance(out, dict)
-    # if trades created, they should be DataFrames with expected columns
+    # if intents are created, the strategy should return the intent/state bundle
     for pair, meta in out.items():
-        df = meta.get("trades")
-        assert df is None or (hasattr(df, "columns") and "gross_pnl" in df.columns)
+        intents = meta.get("intents")
+        state = meta.get("state")
+        assert intents is None or hasattr(intents, "columns")
+        assert state is None or isinstance(state, dict)

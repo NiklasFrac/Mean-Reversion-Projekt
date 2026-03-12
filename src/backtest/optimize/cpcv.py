@@ -246,7 +246,7 @@ def cpcv_splits(
         train_idx = _train_indices_with_purge_embargo(
             boundaries, test_blocks, purge, embargo
         )
-        # Sicherheit: Disjunktheit (optional, aber O(n) – daher nicht per assert erzwungen)
+        # Safety: disjointness (optional, but O(n) - therefore not enforced via assert)
         # If needed, locally test that intersection is empty:
         # if test_idx.size and train_idx.size:
         #     assert np.intersect1d(test_idx, train_idx).size == 0

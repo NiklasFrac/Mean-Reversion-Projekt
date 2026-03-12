@@ -10,6 +10,8 @@ import pandas as pd
 from statsmodels.api import OLS, add_constant
 from statsmodels.tsa.stattools import coint
 
+from backtest.utils import strategy as _strategy_helpers
+
 # ---------- Logging ----------
 logger = logging.getLogger("Tier1StrategyOptimized")
 if not logger.handlers:
@@ -31,7 +33,7 @@ DEFAULT_MIN_DERIVED_DAYS: int = 5
 
 # ---------- Stats helpers ----------
 def safe_coint(x: pd.Series, y: pd.Series, alpha: float = DEFAULT_COINT_ALPHA) -> bool:
-    """Engle-Granger Cointegration; False bei Fehlern/zu wenig Daten."""
+    """Engle-Granger cointegration; False on errors/too little data."""
     xx = pd.Series(pd.to_numeric(x, errors="coerce"), index=x.index).dropna()
     yy = pd.Series(pd.to_numeric(y, errors="coerce"), index=y.index).dropna()
     if xx.empty or yy.empty:
@@ -136,26 +138,25 @@ def evaluate_pair_cointegration(
     ):
         return out
 
+    beta_hat, beta_reason = _strategy_helpers.estimate_beta_ols_with_intercept_details(
+        y,
+        x,
+        ols_cls=OLS,
+        add_constant_fn=add_constant,
+    )
+    if beta_hat is None:
+        if beta_reason == "beta_estimation_failed":
+            logger.debug("evaluate_pair_cointegration: beta estimation failed")
+        out["reject_reason"] = str(beta_reason or "beta_estimation_failed")
+        return out
+    out["beta"] = float(beta_hat)
+
     if half_life_cfg is None:
         out["passed"] = True
         out["reject_reason"] = None
         return out
 
     hl_cfg = resolve_half_life_cfg(half_life_cfg)
-
-    try:
-        X = add_constant(x.to_numpy(dtype=float, copy=False))
-        res = OLS(y.to_numpy(dtype=float, copy=False), X).fit()
-        beta_hat = float(res.params[-1])
-    except Exception as e:
-        logger.debug("evaluate_pair_cointegration: beta estimation failed: %s", e)
-        out["reject_reason"] = "beta_estimation_failed"
-        return out
-
-    if not np.isfinite(beta_hat):
-        out["reject_reason"] = "beta_estimation_failed"
-        return out
-    out["beta"] = float(beta_hat)
 
     resid = (y - beta_hat * x).astype(float)
     lag = resid.shift(1)
@@ -217,31 +218,31 @@ def compute_spread_zscore(
     cfg: Mapping[str, Any] | None = None,
 ) -> tuple[pd.Series, pd.Series, pd.Series]:
     """
-    Klassische Spread-/Z-Score-Berechnung, konsistent mit der Baseline-Strategie:
+    Classic spread/z-score calculation, consistent with the baseline strategy:
 
-      - statisches OLS-Hedge-Ratio β (y_t = α + β x_t + ε_t)
-      - Spread S_t = y_t − β x_t
-      - Rolling-Mean/Std-Z-Score mit Fenster z_window
+      - static OLS hedge ratio beta (y_t = alpha + beta x_t + epsilon_t)
+      - spread S_t = y_t - beta x_t
+      - rolling mean/std z-score with window z_window
 
     """
     cfg = dict(cfg or {})
     z_window = int(cfg.get("z_window", 30))
     z_min_periods = int(cfg.get("z_min_periods", max(z_window // 2, 1)))
 
-    # 1) Alignment und Numerik-Säuberung
+    # 1) Alignment and numeric cleanup
     yy = pd.Series(pd.to_numeric(y, errors="coerce"), index=y.index)
     xx = pd.Series(pd.to_numeric(x, errors="coerce"), index=x.index)
     idx = yy.index.intersection(xx.index)
     yy = yy.reindex(idx).ffill().bfill()
     xx = xx.reindex(idx).ffill().bfill()
 
-    # 2) OLS β-Schätzung (y ~ α + β x) auf gemeinsamen finite Daten
+    # 2) OLS beta estimation (y ~ alpha + beta x) on shared finite data
     mask = yy.notna() & xx.notna()
     y_reg = yy[mask]
     x_reg = xx[mask]
 
     if len(y_reg) < 2:
-        # Fallback: β = 1.0, Spread = y − x
+        # Fallback: beta = 1.0, spread = y - x
         spread = (yy - xx).rename("spread")
         m = spread.rolling(z_window, min_periods=z_min_periods).mean()
         s = (
@@ -253,12 +254,19 @@ def compute_spread_zscore(
         beta_series = pd.Series(1.0, index=spread.index, name="beta")
         return spread, z, beta_series
 
-    try:
-        X = add_constant(x_reg.values)
-        res = OLS(y_reg.values, X).fit()
-        beta_hat = float(res.params[-1])
-    except Exception as e:
-        logger.debug("OLS hedge ratio failed in compute_spread_zscore: %s", e)
+    beta_hat, beta_reason = _strategy_helpers.estimate_beta_ols_with_intercept_details(
+        y_reg,
+        x_reg,
+        ols_cls=OLS,
+        add_constant_fn=add_constant,
+    )
+    if beta_hat is None:
+        if beta_reason == "beta_non_positive":
+            logger.debug(
+                "OLS hedge ratio was non-positive in compute_spread_zscore; using beta=1.0 fallback"
+            )
+        else:
+            logger.debug("OLS hedge ratio failed in compute_spread_zscore")
         beta_hat = 1.0
 
     # 3) Spread + Z-Score
@@ -275,7 +283,7 @@ def compute_spread_zscore(
     return spread, z, beta_series
 
 
-# ---------- Pair prefilter (nur Engle-Granger) ----------
+# ---------- Pair prefilter (Engle-Granger only) ----------
 def pair_prefilter(
     prices: pd.DataFrame,
     *,
@@ -284,11 +292,11 @@ def pair_prefilter(
     half_life_cfg: Mapping[str, Any] | None = None,
 ) -> bool:
     """
-    Grobfilter für Paare: minimaler QC + Engle-Granger-Cointegrationstest.
+    Coarse filter for pairs: minimal QC + Engle-Granger cointegration test.
 
-    - erwartet DataFrame mit mind. zwei Spalten (erste = y, zweite = x)
-    - numerische Säuberung + Alignment
-    - Mindestlänge
+    - expects a DataFrame with at least two columns (first = y, second = x)
+    - numeric cleanup + alignment
+    - minimum length
     - Engle-Granger via safe_coint
     """
     result = evaluate_pair_cointegration(

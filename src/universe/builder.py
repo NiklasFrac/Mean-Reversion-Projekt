@@ -46,7 +46,7 @@ from universe.utils import (
 from universe.vendor import VendorConfig, YFinanceVendor
 
 
-# -------- TypedDicts für mypy --------
+# -------- TypedDicts for mypy --------
 class Monitoring(TypedDict, total=False):
     failed: list[str]
     timeouts: int
@@ -175,7 +175,7 @@ def build_universe(
         )
     except Exception:
         logger.warning(
-            "Konnte Junk-Overrides nicht anwenden; verwende Standardwerte.",
+            "Could not apply junk overrides; using default values.",
             exc_info=False,
         )
 
@@ -233,7 +233,7 @@ def build_universe(
             "Invalid vendor config; falling back to direct yfinance calls: %s", e
         )
 
-    # Canary-Konfiguration (fail fast)
+    # Canary configuration (fail fast)
     canary_cfg: dict[str, Any] = runtime_cfg.get("canary", {}) or {}
     min_valid_tickers = cfg_int(
         canary_cfg,
@@ -250,7 +250,7 @@ def build_universe(
         min_value=0.0,
         logger=logger,
         section_name="runtime.canary",
-    )  # >1.0 = deaktiviert
+    )  # >1.0 = disabled
 
     fail_fast_cfg: dict[str, Any] = runtime_cfg.get("fail_fast", {}) or {}
     fail_fast_enabled = cfg_bool(fail_fast_cfg, "enabled", False)
@@ -497,7 +497,7 @@ def build_universe(
             cached_fundamentals.index.isin(ticker_norms)
         ]
         logger.info(
-            "Fundamentals-Cache geladen: %d rows (relevant=%d).",
+            "Loaded fundamentals cache: %d rows (relevant=%d).",
             cached_funda_rows,
             int(cached_fundamentals.shape[0]),
         )
@@ -544,7 +544,7 @@ def build_universe(
             checkpoint.drop_many(orphaned)
             checkpoint_valid = checkpoint_valid - orphaned
             logger.info(
-                "Checkpoint cleaned: %d Einträge ohne gespeicherte Fundamentals entfernt.",
+                "Checkpoint cleaned: removed %d entries without stored fundamentals.",
                 len(orphaned),
             )
         if cached_symbols or checkpoint_failed_valid:
@@ -557,7 +557,7 @@ def build_universe(
             )
         elif checkpoint_valid and not checkpoint_failed_valid:
             logger.info(
-                "Checkpoint vorhanden, aber kein Fundamentals-Cache gefunden – kompletter Re-Fetch."
+                "Checkpoint exists, but no fundamentals cache was found - performing a full refetch."
             )
 
     checkpoint_for_fetch = checkpoint
@@ -566,7 +566,7 @@ def build_universe(
         checkpoint_skip = None
         if checkpoint is not None and not force_rebuild:
             logger.info(
-                "Fundamentals-Cache deaktiviert oder leer - Checkpoint wird fuer Fundamentals-Fetch nicht verwendet."
+                "Fundamentals cache disabled or empty - checkpoint will not be used for fundamentals fetching."
             )
 
     with stage_timer("fundamentals_fetch"):
@@ -598,7 +598,7 @@ def build_universe(
     fundamentals_finished_at_utc = dt.datetime.now(dt.UTC).isoformat()
     df_funda = _merge_fundamentals_frames(cached_fundamentals, df_funda_new)
     logger.info(
-        "Fundamentals zusammengeführt: cached=%d | fetched_now=%d | merged=%d",
+        "Fundamentals merged: cached=%d | fetched_now=%d | merged=%d",
         int(cached_fundamentals.shape[0]),
         int(df_funda_new.shape[0]),
         int(df_funda.shape[0]),
@@ -691,7 +691,7 @@ def build_universe(
     def _log_df_stats(df: pd.DataFrame, name: str) -> None:
         n = int(df.shape[0])
         if n == 0:
-            logger.info("%s: leer", name)
+            logger.info("%s: empty", name)
             return
         cols = [
             "price",
@@ -722,7 +722,7 @@ def build_universe(
                 checkpoint.retain_only(checkpoint_retain_symbols)
         except Exception as e:
             logger.warning(
-                "Fundamentals-Out fehlgeschlagen (%s): %s", fundamentals_store_path, e
+                "Failed to write fundamentals output (%s): %s", fundamentals_store_path, e
             )
 
     # --- Historical ADV computation ---
@@ -837,7 +837,7 @@ def build_universe(
                         added,
                         f" [{row.get('code')}]" if row.get("code") else "",
                     )
-            # Canary wird final außerhalb dieses try-Blocks durchgesetzt (keine Exception-Schlucken).
+            # Canary is enforced after this try block (do not swallow exceptions).
             if reasons:
                 top = ", ".join(
                     f"{k}:{v}"
@@ -846,22 +846,22 @@ def build_universe(
                 logger.info("Reason-Codes (Top): %s", top)
             if before > 0 and after == 0:
                 logger.warning(
-                    "0 Ticker nach Filtern. Filter streng oder Daten lückenhaft."
+                    "0 tickers remain after filtering. Filters may be too strict or the data may be incomplete."
                 )
             elif before >= 50 and after <= 5:
                 logger.warning(
-                    "Nur %d von %d Ticker nach Filtern übrig. Filter restriktiv oder viele NaNs.",
+                    "Only %d of %d tickers remain after filtering. Filters may be restrictive or many NaNs may be present.",
                     after,
                     before,
                 )
         except Exception as e:
-            logger.error("Filter-Anwendung fehlgeschlagen: %s", e, exc_info=True)
+            logger.error("Filter application failed: %s", e, exc_info=True)
             # Fail fast to avoid emitting an unfiltered universe when filters misfire.
             raise RuntimeError("Filter application failed") from e
 
     _log_df_stats(df_filtered, "Fundamentals/filtered")
 
-    # Final und konsistent (inkl. float_pct-Heuristik) außerhalb des try-Blocks prüfen:
+    # Check final consistency (including the float_pct heuristic) outside the try block:
     can_stats = _enforce_canary(
         df_filtered,
         min_valid_tickers=min_valid_tickers,

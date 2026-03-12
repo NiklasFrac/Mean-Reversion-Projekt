@@ -1,21 +1,21 @@
 """
-Strenger End-to-End-Preflight fuer corporate actions.
+Strict end-to-end preflight for corporate actions.
 
-Ziel: Wenn dieser Test gruen ist, laeuft der produktive Runner mit
-- echten Dividenden (amount > 0)
-- echten Splits   (0 < factor <= 10)
-- echten Delistings (ohne False Positives)
-zuverlaessig durch.
+Goal: if this test is green, the production runner executes reliably with
+- real dividends (amount > 0)
+- real splits   (0 < factor <= 10)
+- real delistings (without false positives)
+without issues.
 
-Wie:
-- Mini-Universum (AAPL, MSFT, TSLA, TWTR, ATVI) 2019..heute
-- Dividenden & Splits: yfinance (Vendor)
-- Delistings: SEC EDGAR (Vendor)
-- Preis-Track wird AUTOMATISCH an EDGAR-Delist-Daten gekappt, damit
-  Delistings *nicht* als False-Positive herausgefiltert werden.
+How:
+- mini universe (AAPL, MSFT, TSLA, TWTR, ATVI) 2019..today
+- dividends & splits: yfinance (vendor)
+- delistings: SEC EDGAR (vendor)
+- the price track is AUTOMATICALLY truncated at EDGAR delist dates so that
+  delistings are *not* filtered out as false positives.
 
-Start in VS Code: Run dieses Skript
-Pfadvorschlag: src/backtest/tools/preflight_corp_actions.py (ersetzt bestehendes)
+Start in VS Code: run this script
+Suggested path: src/backtest/tools/preflight_corp_actions.py (replaces existing)
 """
 
 from __future__ import annotations
@@ -35,7 +35,7 @@ from typing import Dict, List
 import pandas as pd
 
 # --------------------------------------------------------------------
-# Pfade/Imports
+# Paths/imports
 # --------------------------------------------------------------------
 ROOT = Path.cwd()
 SRC_DIR = ROOT / "src" / "backtest" / "src"
@@ -44,8 +44,8 @@ sys.path.insert(0, str(SRC_DIR))
 try:
     import corp_actions_builder as cab
 except Exception as e:
-    print("[FAIL] Konnte corp_actions_builder nicht importieren:", e)
-    print("Tipp: Datei vorhanden?  src/backtest/src/corp_actions_builder.py")
+    print("[FAIL] Could not import corp_actions_builder:", e)
+    print("Hint: file present?  src/backtest/src/corp_actions_builder.py")
     sys.exit(1)
 
 LOG = logging.getLogger("preflight")
@@ -57,7 +57,7 @@ LOG.setLevel(logging.INFO)
 
 
 # --------------------------------------------------------------------
-# HTTP Utils (requests mit Retries)
+# HTTP utils (requests with retries)
 # --------------------------------------------------------------------
 def _req_json(
     url: str, headers: Dict[str, str], tries: int = 3, sleep_sec: float = 0.8
@@ -97,7 +97,7 @@ def _req_text(
 
 
 # --------------------------------------------------------------------
-# YAML-Laden (optional) + User-Agent aus ENV
+# YAML loading (optional) + user agent from ENV
 # --------------------------------------------------------------------
 def _load_yaml_vendor_cfg() -> Dict:
     ypath = ROOT / "backtest" / "configs" / "config.yaml"
@@ -111,12 +111,12 @@ def _load_yaml_vendor_cfg() -> Dict:
             "user_agent": os.environ.get("EDGAR_USER_AGENT", ""),
             "throttle_sec": 0.25,
         },
-        # Builder-Postprocessing (Produktions-Defaults)
+        # Builder post-processing (production defaults)
         "confirm_delists_against_prices": True,
         "delist_grace_days": 30,
         "mark_special_dividends": True,
         "special_div_threshold": 0.25,
-        # fuer den Test: kein Delist aus EU-Preisabriss erzwingen
+        # For this test: do not force a delist from EU price collapse
         "infer_delist_from_price_gap": False,
     }
     try:
@@ -130,10 +130,10 @@ def _load_yaml_vendor_cfg() -> Dict:
             ed_in = vendor.get("sec_edgar") or {}
             ed_out = base["sec_edgar"].copy()
             ed_out.update(ed_in)
-            # Fuer den Test: kein US-Filter, damit TWTR/ATVI sicher dabei sind
+            # For this test: no US filter so TWTR/ATVI are definitely included
             ed_out["us_exchanges"] = ["*"]
             out["sec_edgar"] = ed_out
-            # ENV kann YAML ueberschreiben
+            # ENV can override YAML
             if os.environ.get("EDGAR_USER_AGENT"):
                 out["sec_edgar"]["user_agent"] = os.environ["EDGAR_USER_AGENT"]
             return out
@@ -143,7 +143,7 @@ def _load_yaml_vendor_cfg() -> Dict:
 
 
 # --------------------------------------------------------------------
-# EDGAR-Delist-Daten besorgen (mit Fallback)
+# Fetch EDGAR delisting dates (with fallback)
 # --------------------------------------------------------------------
 FORMS_INTEREST = {"25", "25-NSE", "25-NYSE", "15-12G", "15-12B", "15-15D"}
 
@@ -155,7 +155,7 @@ def _edgar_map_ticker_to_cik(ua: str) -> Dict[str, str]:
         "Accept-Encoding": "gzip, deflate",
     }
     mapping: Dict[str, str] = {}
-    # aktiv
+    # active
     try:
         active = _req_json("https://www.sec.gov/files/company_tickers.json", headers)
         for _, v in (active or {}).items():
@@ -171,7 +171,7 @@ def _edgar_map_ticker_to_cik(ua: str) -> Dict[str, str]:
                 mapping[tk] = cik
     except Exception as e:
         LOG.info("EDGAR active mapping: %s", e)
-    # historisch (inkl. delisteter)
+    # historical (including delisted names)
     try:
         txt = _req_text(
             "https://www.sec.gov/Archives/edgar/cik-lookup-data.txt", headers
@@ -184,7 +184,7 @@ def _edgar_map_ticker_to_cik(ua: str) -> Dict[str, str]:
                     mapping.setdefault(tk, cik)
     except Exception as e:
         LOG.info("EDGAR historical mapping: %s", e)
-    # Sicherheitsnetz
+    # Safety net
     mapping.setdefault("TWTR", "0001418091")
     mapping.setdefault("ATVI", "0000718877")
     return mapping
@@ -218,25 +218,25 @@ def _edgar_delist_dates(tickers: List[str], ua: str) -> Dict[str, pd.Timestamp]:
                 out[tk.upper()] = min(cand)
         except Exception as e:
             LOG.info("EDGAR submissions %s failed: %s", tk, e)
-    # Fallback-Daten, falls leer
+    # Fallback data if empty
     out.setdefault("TWTR", pd.Timestamp("2022-11-07"))
     out.setdefault("ATVI", pd.Timestamp("2023-10-23"))
     return out
 
 
 # --------------------------------------------------------------------
-# Hauptlogik
+# Main logic
 # --------------------------------------------------------------------
 def main() -> int:
     warnings.filterwarnings("ignore")
 
-    # 1) Konfiguration & Reachability
+    # 1) Configuration & reachability
     vendor = _load_yaml_vendor_cfg()
     edgar_cfg = vendor.get("sec_edgar", {})
     ua = edgar_cfg.get("user_agent") or os.environ.get("EDGAR_USER_AGENT") or ""
     if not ua or "@" not in ua:
         print(
-            "[FAIL] EDGAR user_agent fehlt oder ist ungueltig. Setze ENV EDGAR_USER_AGENT oder YAML data.corp_actions_vendor.sec_edgar.user_agent."
+            "[FAIL] EDGAR user_agent is missing or invalid. Set ENV EDGAR_USER_AGENT or YAML data.corp_actions_vendor.sec_edgar.user_agent."
         )
         return 1
 
@@ -250,14 +250,14 @@ def main() -> int:
         ):
             _ = yf.Ticker("AAPL").history(period="5d")
     except Exception as e:
-        print("[FAIL] yfinance nicht erreichbar:", e)
+        print("[FAIL] yfinance not reachable:", e)
         return 1
 
-    # 2) Mini-Universum und Delist-Daten aus EDGAR
+    # 2) Mini universe and delist dates from EDGAR
     delist_dt = _edgar_delist_dates(["TWTR", "ATVI"], ua)
-    LOG.info("EDGAR Delist-Daten: %s", {k: str(v.date()) for k, v in delist_dt.items()})
+    LOG.info("EDGAR delist dates: %s", {k: str(v.date()) for k, v in delist_dt.items()})
 
-    # 3) Preis-Matrix bauen und Delists *kappen*
+    # 3) Build price matrix and truncate delists
     end = pd.Timestamp.today().normalize()
     start = pd.Timestamp("2019-01-01")
     idx = pd.date_range(start, end, freq="B")
@@ -271,7 +271,7 @@ def main() -> int:
         },
         index=idx,
     )
-    # Delisted-Serien ab Delist-Datum+1 auf NaN setzen (letzter gueltiger Tag = Delist)
+    # Set delisted series to NaN from delist_date+1 onward (last valid day = delist)
     for sym in ["TWTR", "ATVI"]:
         d = delist_dt.get(sym)
         if d is not None:
@@ -287,7 +287,7 @@ def main() -> int:
     p_ca = outdir / "corp_actions_preflight.csv"
     prices.to_pickle(p_prices)
 
-    # 5) Vendor-Settings finalisieren: keine Heuristik-Delists im Test
+    # 5) Finalize vendor settings: no heuristic delists in this test
     vendor_pf = dict(vendor)
     vendor_pf["yf_throttle_sec"] = 0.0
     vendor_pf["infer_delist_from_price_gap"] = False
@@ -296,83 +296,83 @@ def main() -> int:
     vendor_pf["sec_edgar"]["us_exchanges"] = ["*"]
 
     # 6) Pipeline ausfuehren wie im Runner
-    LOG.info("Starte ensure_and_seed_corporate_actions_file (Mini-Universum)...")
+    LOG.info("Starting ensure_and_seed_corporate_actions_file (mini universe)...")
     try:
         cab.ensure_and_seed_corporate_actions_file(
             path=p_ca,
             price_path=p_prices,
             vendor=vendor_pf,
             universe_meta=None,
-            infer_splits=False,  # echte Splits via yfinance
-            infer_delist=False,  # echte Delists via EDGAR
+            infer_splits=False,  # real splits via yfinance
+            infer_delist=False,  # real delists via EDGAR
         )
     except Exception as e:
-        print("[FAIL] ensure_and_seed_corporate_actions_file brach ab:", e)
+        print("[FAIL] ensure_and_seed_corporate_actions_file aborted:", e)
         return 1
 
-    # 7) Ergebnisse pruefen (streng)
+    # 7) Check results (strict)
     try:
         ca = pd.read_csv(p_ca)
     except Exception as e:
-        print("[FAIL] Ausgabedatei konnte nicht gelesen werden:", e)
+        print("[FAIL] Could not read output file:", e)
         return 1
 
     if ca.empty:
-        print("[FAIL] Preflight-CSV ist leer - keine Events gefunden.")
+        print("[FAIL] Preflight CSV is empty - no events found.")
         return 1
 
-    # Typen normalisieren
+    # Normalize types
     ca["type"] = ca["type"].astype(str).str.lower().str.strip()
 
-    # a) Dividenden: >0 und vorhanden
+    # a) Dividends: >0 and present
     div = ca[ca["type"].eq("dividend")].copy()
     if div.empty or not (div["amount"].astype(float) > 0).all():
-        print("[FAIL] Dividenden fehlen oder amount<=0 gefunden.")
+        print("[FAIL] Dividends missing or amount<=0 found.")
         return 1
 
-    # b) Splits: vorhanden & plausibel (0<factor<=10) - min. eines fuer AAPL/TSLA erwartet
+    # b) Splits: present and plausible (0<factor<=10) - expect at least one for AAPL/TSLA
     spl = ca[ca["type"].eq("split")].copy()
     ok_split_range = (spl["factor"].astype(float) > 0) & (
         spl["factor"].astype(float) <= 10
     )
     if spl.empty or not ok_split_range.all():
-        print("[FAIL] Splits fehlen oder unplausible Faktoren gefunden.")
+        print("[FAIL] Splits missing or implausible factors found.")
         return 1
     if spl[spl["symbol"].isin(["AAPL", "TSLA"])].empty:
-        print("[FAIL] Erwarteter Split bei AAPL oder TSLA nicht gefunden (yfinance).")
+        print("[FAIL] Expected split for AAPL or TSLA not found (yfinance).")
         return 1
 
-    # c) Delistings: exakt TWTR & ATVI - keine weiteren, keine False Positives
+    # c) Delistings: exactly TWTR & ATVI - no others, no false positives
     dl = ca[ca["type"].eq("delist")].copy()
     exp = {"TWTR", "ATVI"}
     got = set(dl["symbol"].astype(str).str.upper())
     if got != exp:
-        print(f"[FAIL] Delistings stimmen nicht. Erwartet {exp}, gefunden {got}.")
+        print(f"[FAIL] Delistings do not match. Expected {exp}, found {got}.")
         return 1
-    # Notes sollten EDGAR tragen
+    # Notes should mention EDGAR
     if (
         dl[
             ~dl["notes"].astype(str).str.contains("sec-edgar", case=False, na=False)
         ].shape[0]
         > 0
     ):
-        print("[FAIL] Delisting-Notes stammen nicht aus EDGAR (sec-edgar).")
+        print("[FAIL] Delisting notes do not come from EDGAR (sec-edgar).")
         return 1
-    # Keine Delists fuer die anderen
+    # No delists for the others
     others = {"AAPL", "MSFT", "TSLA"}
     if any(sym in got for sym in others):
-        print("[FAIL] False-Positive-Delist fuer AAPL/MSFT/TSLA entdeckt.")
+        print("[FAIL] False-positive delist detected for AAPL/MSFT/TSLA.")
         return 1
 
-    # d) Keine Duplikate im Schluessel
+    # d) No duplicate events in the key
     dup = ca.duplicated(
         subset=["symbol", "date", "type", "factor", "amount"], keep=False
     )
     if bool(dup.any()):
-        print("[FAIL] Doppelte Events gefunden (symbol,date,type,factor,amount).")
+        print("[FAIL] Duplicate events found (symbol,date,type,factor,amount).")
         return 1
 
-    # e) Zusammenfassung
+    # e) Summary
     n_div = int((ca["type"] == "dividend").sum())
     n_spl = int((ca["type"] == "split").sum())
     n_del = int((ca["type"] == "delist").sum())
@@ -382,7 +382,7 @@ def main() -> int:
     print(f"Window:   [{start.date()} .. {end.date()}]")
     print(f"Counts -> Dividends={n_div}, Splits={n_spl}, Delistings={n_del}")
     print(
-        "[OK] Strenger Preflight erfolgreich. Runner-Pipeline wird mit echten Werten und ohne False Positives laufen."
+        "[OK] Strict preflight succeeded. The runner pipeline will run with real values and without false positives."
     )
     return 0
 

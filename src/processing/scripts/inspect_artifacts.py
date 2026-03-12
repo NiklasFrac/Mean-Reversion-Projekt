@@ -11,7 +11,7 @@ import pandas as pd
 
 
 def _read_df_any(p: Path) -> pd.DataFrame:
-    """Liest DataFrame aus pkl/parquet/csv. Hebt Fehler bei fehlender Datei."""
+    """Reads a DataFrame from pkl/parquet/csv. Raises on missing files."""
     if not p.exists():
         raise FileNotFoundError(p)
     if p.suffix in {".pkl", ".p"}:
@@ -33,8 +33,8 @@ def _read_df_any(p: Path) -> pd.DataFrame:
 
 def _latest(glob_pattern: str) -> Path | None:
     """
-    Liefert die neueste Datei zum Pattern. Unterstuetzt absolute/relative Patterns.
-    (Path.glob kann unter Windows keine absoluten Patterns -> daher glob()).
+    Returns the newest file for the pattern. Supports absolute/relative patterns.
+    (Path.glob cannot handle absolute patterns on Windows -> use glob() instead).
     """
     pat = Path(glob_pattern)
     if pat.is_absolute():
@@ -73,7 +73,7 @@ def _search_dirs(data_dir: Path) -> list[Path]:
 
 def load_universe_paths(data_dir: Path) -> dict[str, Path | None]:
     """
-    Sucht Rohdaten-Pfad (raw_prices) aus Manifest oder per Fallback.
+    Finds the raw data path (raw_prices) from the manifest or via fallback.
     """
     uni_manifest = data_dir / "universe_manifest.json"
     raw_prices: Path | None = None
@@ -103,9 +103,9 @@ def load_universe_paths(data_dir: Path) -> dict[str, Path | None]:
 
 def load_processing_paths(data_dir: Path) -> dict[str, Path | None]:
     """
-    Liefert Pfade auf aktuelle Processing-Artefakte.
-    Bevorzugt runs/data/processed/* und nutzt Manifest-Hinweise, wenn verfuegbar.
-    Legacy-Namen werden als Fallback weiter erkannt.
+    Returns paths to the current processing artifacts.
+    Prefers runs/data/processed/* and uses manifest hints when available.
+    Legacy names are still recognized as a fallback.
     """
     dirs = _search_dirs(data_dir)
 
@@ -253,15 +253,15 @@ def summarize_df(df: pd.DataFrame | None, name: str) -> dict[str, Any]:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--data-dir", default="runs/data", help="Pfad zum Data-Verzeichnis")
+    ap.add_argument("--data-dir", default="runs/data", help="Path to the data directory")
     args = ap.parse_args(argv)
     data_dir = Path(args.data_dir)
 
-    # ---- Universe pruefen ----
+    # ---- Check universe ----
     uni = load_universe_paths(data_dir)
     raw_p = uni["raw_prices"]
     if not raw_p:
-        print("[UNIVERSE] Kein raw_prices.* gefunden unter", data_dir)
+        print("[UNIVERSE] No raw_prices.* found under", data_dir)
         raw_df = None
     else:
         raw_df = _read_df_any(raw_p)
@@ -271,11 +271,11 @@ def main(argv: list[str] | None = None) -> int:
 
     uni_sum = summarize_df(raw_df, "universe_raw")
 
-    # ---- Processing pruefen ----
+    # ---- Check processing ----
     pr = load_processing_paths(data_dir)
     exec_p = pr["exec"]
     if not exec_p:
-        print("[PROCESSING] Kein filled_prices_exec.* gefunden unter", data_dir)
+        print("[PROCESSING] No filled_prices_exec.* found under", data_dir)
         filled_df = None
     else:
         filled_df = _read_df_any(exec_p)
@@ -336,26 +336,26 @@ def main(argv: list[str] | None = None) -> int:
 
     if raw_cols == 0:
         verdict = "LIKELY_UNIVERSE_ISSUE"
-        reason = "Universe hat keinen brauchbaren raw_prices-Cache gefunden/erstellt."
+        reason = "Universe did not find/create a usable raw_prices cache."
     elif filled_cols == 0 and raw_cols > 0:
         verdict = "LIKELY_PROCESSING_ISSUE"
         reason = (
-            "Processing hat trotz vorhandenem Universe-Cache keinen Output erzeugt."
+            "Processing produced no output despite an existing universe cache."
         )
     elif raw_cols <= 10 and filled_cols <= raw_cols:
         verdict = "LIKELY_UNIVERSE_ISSUE"
-        reason = f"Universe lieferte nur {raw_cols} Ticker (sehr wenig)."
+        reason = f"Universe produced only {raw_cols} tickers (very few)."
     elif raw_cols > 50 and filled_cols <= max(5, int(0.2 * raw_cols)):
         verdict = "LIKELY_PROCESSING_ISSUE"
         reason = (
-            f"Starker Drop: raw_cols={raw_cols} -> filled_cols={filled_cols} "
-            "(pruefe grid_mode/keep_pct)."
+            f"Large drop: raw_cols={raw_cols} -> filled_cols={filled_cols} "
+            "(check grid_mode/keep_pct)."
         )
     else:
         verdict = "NO_CLEAR_FAULT"
         reason = (
             f"raw_cols={raw_cols}, filled_cols={filled_cols}. "
-            "Drop im erwartbaren Rahmen oder gemischt."
+            "Drop is within the expected range or mixed."
         )
 
     print(f"\n=== VERDICT: {verdict} ===")

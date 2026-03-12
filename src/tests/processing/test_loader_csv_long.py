@@ -26,13 +26,13 @@ def test__load_any_prices_long_csv_pivots_to_wide(tmp_path: Path):
     out = _load_any_prices(p_csv)
     assert set(out.columns) == {"A", "B"}
     assert len(out) == 4
-    # Index sollte UTC-naiv nach ensure_utc_index werden; hier prüfen wir nur, dass ts parsebar ist
+    # index should become UTC-naive after ensure_utc_index; here we only check that ts is parseable
     assert pd.api.types.is_datetime64_any_dtype(out.index)
 
 
 def test_load_raw_prices_from_universe_parquet_long(tmp_path: Path, monkeypatch):
     """
-    Deckt Discovery (Parquet) ab; Volume ebenfalls als Parquet.
+    Covers discovery (Parquet); volume also as Parquet.
     """
     data_dir = tmp_path / "u"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -49,7 +49,7 @@ def test_load_raw_prices_from_universe_parquet_long(tmp_path: Path, monkeypatch)
     (data_dir / "raw_prices.parquet").parent.mkdir(parents=True, exist_ok=True)
     df_long.to_parquet(data_dir / "raw_prices.parquet", index=False)
 
-    # Volume als Parquet (Discovery unterstützt das)
+    # volume as Parquet (discovery supports this)
     vol = pd.DataFrame(
         {"A": [100, 100, 100, 100], "B": [200, 200, 200, 200]}, index=idx
     )

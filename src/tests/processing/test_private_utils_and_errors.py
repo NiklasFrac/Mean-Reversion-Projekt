@@ -21,7 +21,7 @@ def test__tmp_path_for_appends_tmp_suffix(tmp_path: Path):
 
 
 def test__git_functions_fail_safe(monkeypatch):
-    # Modul frisch laden, damit evtl. globale Patches aus anderen Tests verschwinden
+    # Reload the module so global patches from other tests do not leak in
     io = importlib.reload(io_mod)
 
     def boom(*args, **kwargs):
@@ -47,7 +47,7 @@ def test__load_any_prices_raises_on_unsupported(tmp_path: Path):
     raw = raw_mod
     p = tmp_path / "weird.pkl"
     with p.open("wb") as f:
-        pickle.dump([1, 2, 3], f)  # kein DataFrame, kein dict -> TypeError erwartet
+        pickle.dump([1, 2, 3], f)  # no DataFrame, no dict -> TypeError expected
     with pytest.raises(TypeError):
         raw._load_any_prices(p)
 
@@ -69,7 +69,7 @@ def test__discover_handles_exception(monkeypatch):
     def bad_glob(*args, **kwargs):
         raise RuntimeError("glob failed")
 
-    # Path.glob wirft -> _discover soll None zurückgeben
+    # Path.glob raises -> _discover should return None
     from pathlib import Path as _P
 
     monkeypatch.setattr(_P, "glob", bad_glob, raising=True)

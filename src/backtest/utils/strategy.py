@@ -70,20 +70,40 @@ def estimate_beta_ols_with_intercept(
     ols_cls: Callable[..., Any] = OLS,
     add_constant_fn: Callable[..., Any] = add_constant,
 ) -> float:
+    beta, _ = estimate_beta_ols_with_intercept_details(
+        y,
+        x,
+        ols_cls=ols_cls,
+        add_constant_fn=add_constant_fn,
+    )
+    return float(beta) if beta is not None else 1.0
+
+
+def estimate_beta_ols_with_intercept_details(
+    y: pd.Series,
+    x: pd.Series,
+    *,
+    ols_cls: Callable[..., Any] = OLS,
+    add_constant_fn: Callable[..., Any] = add_constant,
+) -> tuple[float | None, str | None]:
     yy = pd.to_numeric(y, errors="coerce")
     xx = pd.to_numeric(x, errors="coerce")
     m = yy.notna() & xx.notna()
     if int(m.sum()) < 2:
-        return 1.0
+        return None, "beta_estimation_failed"
     yv = yy.loc[m].to_numpy(dtype=float, copy=False)
     xv = xx.loc[m].to_numpy(dtype=float, copy=False)
     try:
         X = add_constant_fn(xv)
         res = ols_cls(yv, X).fit()
         beta = float(res.params[-1])
-        return beta if np.isfinite(beta) else 1.0
+        if not np.isfinite(beta):
+            return None, "beta_estimation_failed"
+        if beta <= 0.0:
+            return None, "beta_non_positive"
+        return beta, None
     except Exception:
-        return 1.0
+        return None, "beta_estimation_failed"
 
 
 def rolling_zscore_stats_past_only(

@@ -91,6 +91,7 @@ def test_loader_pairs_adv_and_prepare(
         "backtest.loader.evaluate_pair_cointegration",
         lambda *_args, **_kwargs: {
             "passed": True,
+            "beta": 1.2,
             "z_window": 8,
             "max_hold_days": 16,
             "half_life": 8.0,

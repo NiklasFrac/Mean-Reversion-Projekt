@@ -9,14 +9,14 @@ T = TypeVar("T")
 
 @dataclass(slots=True, frozen=True)
 class PerfResult(Generic[T]):
-    """Ergebnis einer zeitlich gemessenen Funktionsausfuehrung."""
+    """Result of a timed function execution."""
 
     value: T
     runtime_sec: float
 
 
 def measure_runtime(fn: Callable[[], T]) -> PerfResult[T]:
-    """Fuehrt ``fn`` aus und misst die Wall-Clock-Laufzeit in Sekunden."""
+    """Executes ``fn`` and measures wall-clock runtime in seconds."""
     start = time.perf_counter()
     value = fn()
     end = time.perf_counter()

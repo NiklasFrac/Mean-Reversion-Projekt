@@ -15,18 +15,18 @@ import pandas as pd
 import pytest
 
 # -----------------------------------------------------------------------------
-# Pfade (robust für src-Layout)
-# Diese Datei: <repo-root>/src/tests/processing/conftest.py
+# Paths (robust for src layout)
+# this file: <repo-root>/src/tests/processing/conftest.py
 # -----------------------------------------------------------------------------
 _THIS = Path(__file__).resolve()
 SRC_DIR = _THIS.parents[2]  # -> <repo-root>/src
 REPO_ROOT = _THIS.parents[3]  # -> <repo-root>
 
 if str(SRC_DIR) not in sys.path:
-    sys.path.insert(0, str(SRC_DIR))  # macht "import processing" beim Import möglich
+    sys.path.insert(0, str(SRC_DIR))  # makes "import processing" importable
 
 # -----------------------------------------------------------------------------
-# Grund-Determinismus
+# Basic determinism
 # -----------------------------------------------------------------------------
 os.environ.setdefault("PYTHONHASHSEED", "0")
 np.random.seed(1337)
@@ -37,11 +37,11 @@ except Exception:
 
 
 # -----------------------------------------------------------------------------
-# Globale Test-Umgebung
+# Global test environment
 # -----------------------------------------------------------------------------
 @pytest.fixture(autouse=True)
 def _stable_env(monkeypatch: pytest.MonkeyPatch):
-    # feste TZ und keine produktiven Konfig-Variablen
+    # fixed TZ and no production config variables
     monkeypatch.setenv("TZ", "UTC")
     monkeypatch.delenv("BACKTEST_CONFIG", raising=False)
     monkeypatch.delenv("STRAT_CONFIG", raising=False)
@@ -52,7 +52,7 @@ def _stable_env(monkeypatch: pytest.MonkeyPatch):
 @pytest.fixture
 def golden_dir() -> Path:
     """
-    Goldens unter <repo-root>/src/tests/golden/processing (deine Vorgabe).
+    Goldens under <repo-root>/src/tests/golden/processing.
     """
     gdir = REPO_ROOT / "src" / "tests" / "golden" / "processing"
     gdir.mkdir(parents=True, exist_ok=True)
@@ -65,7 +65,7 @@ def update_golden() -> bool:
 
 
 # -----------------------------------------------------------------------------
-# Stubs für optionale Module (keine Repo-Seiteneffekte)
+# Stubs for optional modules (no repo side effects)
 # -----------------------------------------------------------------------------
 @pytest.fixture
 def stub_processing_modules(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -118,7 +118,7 @@ def stub_processing_modules(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 # -----------------------------------------------------------------------------
-# Maskierungs-Utilities für Golden-JSONs
+# Masking utilities for golden JSONs
 # -----------------------------------------------------------------------------
 def _round_floats(d: Any, ndigits: int = 6) -> Any:
     if isinstance(d, float):

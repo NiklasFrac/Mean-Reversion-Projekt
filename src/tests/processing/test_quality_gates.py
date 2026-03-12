@@ -17,7 +17,7 @@ def test_ensure_utc_index_sorts_and_dedups():
     )
     df = pd.DataFrame({"A": [1.0, 3.0, 2.0]}, index=idx)
     out = ensure_utc_index(df)
-    # Duplikate werden via Median zusammengezogen -> (1.0, 3.0) -> 2.0
+    # duplicates are collapsed via median -> (1.0, 3.0) -> 2.0
     assert out.shape == (2, 1)
     assert float(out.iloc[0, 0]) == 2.0
     assert out.index.is_monotonic_increasing
@@ -35,7 +35,7 @@ def test_validate_prices_wide_basic_metrics():
 
 
 def test_longest_nan_run_and_quality_gates_reasons():
-    # Serie mit führenden NAs, langem Gap und nonpositiven Werten am Ende
+    # series with leading NAs, a long gap, and nonpositive values at the end
     s = pd.Series([np.nan, np.nan, 1.0, np.nan, np.nan, np.nan, 2.0, 0.0])
     assert longest_nan_run(s) == 3
 

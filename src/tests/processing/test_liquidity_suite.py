@@ -43,7 +43,7 @@ def test_build_adv_map_from_price_and_volume():
     assert set(result.keys()) == {"AAA", "BBB"}
     assert {"adv", "last_price"} <= set(result["AAA"].keys())
 
-    # Werte sind float-castbar und NaN bei fehlendem last_price
+    # values are float-castable and NaN when last_price is missing
     assert isinstance(result["AAA"]["adv"], float)
     assert result["AAA"]["last_price"] == 3.0
     assert np.isnan(result["BBB"]["last_price"])

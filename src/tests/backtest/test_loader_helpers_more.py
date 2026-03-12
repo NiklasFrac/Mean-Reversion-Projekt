@@ -201,6 +201,18 @@ def test_prepare_pairs_data_branches(monkeypatch: pytest.MonkeyPatch) -> None:
     assert "AAA-BBB" in out3
 
 
+def test_prepare_pairs_data_filters_non_positive_beta_without_prefilter() -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    prices = pd.DataFrame(
+        {"AAA": [5, 4, 3, 2, 1], "BBB": [1, 2, 3, 4, 5]},
+        index=idx,
+    )
+    pairs = {"AAA-BBB": {"t1": "AAA", "t2": "BBB"}}
+
+    out = loader.prepare_pairs_data(prices, pairs, disable_prefilter=True)
+    assert out == {}
+
+
 def test_prepare_pairs_data_passes_pair_prefilter_cfg(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -217,6 +229,7 @@ def test_prepare_pairs_data_passes_pair_prefilter_cfg(
         assert isinstance(half_life_cfg, dict)
         return {
             "passed": True,
+            "beta": 1.3,
             "z_window": 9,
             "max_hold_days": 18,
             "half_life": 9.0,

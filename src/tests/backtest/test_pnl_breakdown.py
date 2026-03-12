@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from backtest.reporting.pnl_breakdown import generate_pnl_breakdown
 
@@ -24,6 +25,7 @@ def _write_sample_trades(path: Path) -> None:
             "slippage_cost": [-0.2, -0.2],
             "impact_cost": [-0.1, -0.1],
             "borrow_cost": [0.0, -0.1],
+            "exec_diag_costs_only": [True, False],
         }
     )
     trades.to_csv(path, index=False)
@@ -56,6 +58,9 @@ def test_generate_pnl_breakdown_writes_reports(tmp_path: Path) -> None:
     daily = pd.read_csv(out / "pnl_breakdown_daily.csv")
     assert not daily.empty
     assert "total_costs" in daily.columns
+    assert "execution_diagnostic_costs" in daily.columns
+    assert float(daily["total_costs"].sum()) == pytest.approx(-1.4)
+    assert float(daily["execution_diagnostic_costs"].sum()) == pytest.approx(-0.3)
 
 
 def test_generate_pnl_breakdown_runs_when_called_even_without_cfg_flags(

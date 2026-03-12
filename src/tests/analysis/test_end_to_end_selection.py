@@ -57,10 +57,10 @@ def test_end_to_end_selects_pairs(tmp_path: Path):
 
     df_sel = main(cfg_path=None, quick=False, overrides=cfg)
     assert not df_sel.empty
-    # Erwartung: A-B irgendwo dabei
+    # expectation: A-B should appear somewhere
     assert any(x in df_sel["pair"].tolist() for x in ("A-B", "B-A"))
 
-    # Artefakte vorhanden
+    # artifacts present
     assert (
         out.exists()
         and out.with_suffix(".csv").exists()

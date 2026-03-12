@@ -18,8 +18,8 @@ logger.setLevel(logging.INFO)
 def read_tickers_file(path: Path) -> list[str]:
     """
     Unterstuetzt:
-      - CSV mit Spalte 'Symbol' oder 'ticker' (case-insensitive)
-      - generisches CSV: erste Spalte
+      - CSV with a 'Symbol' or 'ticker' column (case-insensitive)
+      - generic CSV: first column
       - Plain-Text: ein Ticker je Zeile
     """
     p = Path(path)

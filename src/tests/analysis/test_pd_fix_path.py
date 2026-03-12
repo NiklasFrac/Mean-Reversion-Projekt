@@ -16,9 +16,9 @@ def test_compute_shrink_corr_triggers_pd_fix(monkeypatch):
     # Monkeypatch LedoitWolf mit Fake
     monkeypatch.setattr(da, "LedoitWolf", lambda: FakeLW())
     df = pd.DataFrame({"A": [1.0, 1.1, 1.2, 1.3, 1.4], "B": [2.0, 2.2, 2.4, 2.6, 2.8]})
-    # Log-Returns unnötig, Funktion erwartet returns, aber Werte sind egal
+    # log returns are unnecessary; the function expects returns, but the values are irrelevant
     corr = da.compute_shrink_corr(df, fix_pd=True)
     assert corr.shape == (2, 2)
-    # Korreliationen müssen [-1,1] und symmetrisch sein
+    # correlations must be within [-1,1] and symmetric
     assert np.allclose(corr.values, corr.values.T, atol=1e-8)
     assert (corr.values <= 1.0 + 1e-12).all() and (corr.values >= -1.0 - 1e-12).all()

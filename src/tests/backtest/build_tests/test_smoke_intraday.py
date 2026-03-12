@@ -5,14 +5,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-# Projektpfad für Module
+# Project path for modules
 sys.path.insert(0, str(Path.cwd() / "src" / "backtest" / "src"))
 
 from intraday_exec import annotate_trades_with_intraday_bar  # noqa
 
 
 def main():
-    # Mini-Trade (beide Legs, Stück & Preis gegeben → kein price_data nötig)
+    # Mini trade (both legs, units and price given -> no price_data needed)
     trades = pd.DataFrame(
         [
             {
@@ -32,23 +32,23 @@ def main():
 
     cfg = {
         "execution": {
-            "mode": "intraday_bar",  # <- Test unseres Hooks
+            "mode": "intraday_bar",  # test our hook
             "n_buckets": 7,
             "ucurve": "U_DEFAULT",
             "fallback": {"adv_currency": 5_000_000.0, "vol_daily": 0.02},
         },
         "costs": {
-            "fee_bps": 0.00005,  # 5 bps auf Notional
+            "fee_bps": 0.00005,  # 5 bps on notional
             "per_share_fee": 0.0,  # optional
-            "sqrt_impact_coeff": 0.1,  # Impact-Modell an
+            "sqrt_impact_coeff": 0.1,  # impact model on
         },
-        "output": {"stats_dir": None},  # kein Log schreiben
+        "output": {"stats_dir": None},  # do not write a log
     }
 
     out, log_path = annotate_trades_with_intraday_bar(trades, price_data=None, cfg=cfg)
 
     r = out.iloc[0]
-    # Invarianten prüfen
+    # Check invariants
     sums_ok = np.isclose(
         float(r["total_costs"]),
         float(r["fees"]) + float(r["slippage_cost"]) + float(r["impact_cost"]),

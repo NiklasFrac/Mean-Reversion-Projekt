@@ -24,9 +24,9 @@ def test_load_raw_prices_from_universe_parquet_happy_path(
 ):
     """
     Deckt den bislang ungetesteten Zweig ab:
-      - Preise aus 'raw_prices.parquet'
-      - Volume aus 'raw_volume.parquet'
-      - _discover via CWD + relativer Pfad
+      - prices from 'raw_prices.parquet'
+      - Volume from 'raw_volume.parquet'
+      - _discover via CWD + relative path
     """
     data_dir = tmp_path / "u"
     data_dir.mkdir(parents=True, exist_ok=True)
@@ -51,7 +51,7 @@ def test_load_raw_prices_from_universe_raises_when_missing(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
     """
-    Deckt den Fehlerpfad ab, wenn GAR KEIN raw_prices.* vorhanden ist.
+    Covers the error path when NO raw_prices.* exists.
     """
     empty_dir = tmp_path / "empty_u"
     empty_dir.mkdir(parents=True, exist_ok=True)

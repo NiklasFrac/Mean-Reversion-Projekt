@@ -3,20 +3,20 @@
 """
 Borrow Inputs Verifier (Inline/YAML)
 ===================================
-Validiert Borrow-Inputs, die direkt in der Backtest-YAML stehen (keine Dateien).
+Validates borrow inputs defined directly in the backtest YAML (no files).
 
-Unterstützte Keys:
-  - borrow.per_asset_rate_annual: {SYMBOL: rate_annual, ...} oder
+Supported keys:
+  - borrow.per_asset_rate_annual: {SYMBOL: rate_annual, ...} or
     borrow.per_asset_rates:       [{"symbol": "...", "rate_annual": ...}, ...]
   - borrow.rates:                 [{"date": "...", "symbol": "...", "rate_annual": ...}, ...]  (long)
   - borrow.rate_series_by_symbol: {SYMBOL: {date: rate_annual, ...} | [{"date": "...", "rate_annual": ...}, ...]}
   - borrow.availability:          [{"date": "...", "symbol": "...", "available": 0/1}, ...]
 
-Legacy (deaktiviert): borrow.*_csv / borrow.availability_path
+Legacy (disabled): borrow.*_csv / borrow.availability_path
 
-Außerdem wird data.prices_path geladen, um Abdeckung gegen die Preis-Symbole zu prüfen.
+In addition, data.prices_path is loaded to check coverage against the price symbols.
 
-Aufruf (Repo-Root):
+Usage (repo root):
   python src/backtest/scripts/verify_borrow_inputs.py
 Optional:
   BACKTEST_CONFIG=runs/configs/config_backtest.yaml python src/backtest/scripts/verify_borrow_inputs.py
@@ -35,12 +35,12 @@ from backtest.utils.tz import coerce_series_to_tz, to_naive_day
 try:
     pass
 except Exception as e:  # pragma: no cover
-    raise RuntimeError("PyYAML benötigt: pip install pyyaml") from e
+    raise RuntimeError("PyYAML is required: pip install pyyaml") from e
 
 
 from backtest.utils.common.io import load_yaml_dict as _load_yaml_dict
 
-RATE_MIN, RATE_MAX = 0.0001, 0.50  # 1 bps .. 50% (weit, konservativ)
+RATE_MIN, RATE_MAX = 0.0001, 0.50  # 1 bps .. 50% (wide, conservative)
 PER_ASSET_MIN, PER_ASSET_MAX = 0.0025, 0.10  # 25 bps .. 10%
 
 
@@ -91,7 +91,7 @@ def _load_prices(path: Path) -> pd.DataFrame:
     if suf in (".pkl", ".pickle"):
         obj = pd.read_pickle(path)
         if not isinstance(obj, pd.DataFrame):
-            raise ValueError("Pickle enthält kein DataFrame")
+            raise ValueError("Pickle does not contain a DataFrame")
         df = obj
     elif suf == ".parquet":
         df = pd.read_parquet(path)
@@ -154,7 +154,7 @@ def _parse_per_asset_any(obj: Any) -> dict[str, float]:
 def check_per_asset(per_asset_obj: Any, prices: pd.DataFrame) -> bool:
     d = _parse_per_asset_any(per_asset_obj)
     if not d:
-        _status("OK", "per-asset: nicht gesetzt (optional).")
+        _status("OK", "per-asset: not set (optional).")
         return True
 
     ok = True
@@ -169,7 +169,7 @@ def check_per_asset(per_asset_obj: Any, prices: pd.DataFrame) -> bool:
         bad = int((~((rates >= PER_ASSET_MIN) & (rates <= PER_ASSET_MAX))).sum())
         _status(
             "WARN",
-            f"{bad} Raten außerhalb erwarteter Range [{PER_ASSET_MIN:.4f},{PER_ASSET_MAX:.4f}].",
+            f"{bad} rates outside the expected range [{PER_ASSET_MIN:.4f},{PER_ASSET_MAX:.4f}].",
         )
         ok = False
 
@@ -177,7 +177,7 @@ def check_per_asset(per_asset_obj: Any, prices: pd.DataFrame) -> bool:
     if missing:
         sample = sorted(list(missing))[:5]
         _status(
-            "WARN", f"{len(missing)} Symbole fehlen im per-asset set (z.B. {sample} …)"
+            "WARN", f"{len(missing)} symbols are missing from the per-asset set (e.g. {sample} ...)"
         )
         ok = False
 
@@ -261,12 +261,12 @@ def check_rates(
     if df_long.empty and not rs_map:
         _status(
             "OK",
-            f"rates: nicht gesetzt (fallback auf default_rate_annual={default_rate:.4f}).",
+            f"rates: not set (falling back to default_rate_annual={default_rate:.4f}).",
         )
         if default_rate <= 0:
             _status(
                 "WARN",
-                "default_rate_annual ist 0 => borrow_cost wird effektiv immer 0.",
+                "default_rate_annual is 0 => borrow_cost will effectively always be 0.",
             )
             ok = False
         return ok
@@ -278,13 +278,13 @@ def check_rates(
             _status("FAIL", "NaN in borrow.rates.rate_annual")
             ok = False
         if not ((vals >= RATE_MIN) & (vals <= RATE_MAX)).all():
-            _status("WARN", "borrow.rates enthält Werte außerhalb [1bp, 50%].")
+            _status("WARN", "borrow.rates contains values outside [1bp, 50%].")
             ok = False
         miss_sym = set(prices.columns.astype(str)) - set(df_long["symbol"].astype(str))
         if miss_sym:
             sample = sorted(list(miss_sym))[:5]
             _status(
-                "WARN", f"borrow.rates fehlt {len(miss_sym)} Symbole (z.B. {sample} …)"
+                "WARN", f"borrow.rates is missing {len(miss_sym)} symbols (e.g. {sample} ...)"
             )
             ok = False
 
@@ -305,7 +305,7 @@ def check_rates(
         ):
             _status(
                 "WARN",
-                "borrow.rate_series_by_symbol enthält Werte außerhalb [1bp, 50%].",
+                "borrow.rate_series_by_symbol contains values outside [1bp, 50%].",
             )
             ok = False
         miss_sym = set(prices.columns.astype(str)) - set(rs_map.keys())
@@ -313,7 +313,7 @@ def check_rates(
             sample = sorted(list(miss_sym))[:5]
             _status(
                 "WARN",
-                f"rate_series_by_symbol fehlt {len(miss_sym)} Symbole (z.B. {sample} …)",
+                f"rate_series_by_symbol is missing {len(miss_sym)} symbols (e.g. {sample} ...)",
             )
             ok = False
 
@@ -380,7 +380,7 @@ def _parse_availability(obj: Any) -> pd.DataFrame:
 def check_availability(av_obj: Any, prices: pd.DataFrame) -> bool:
     df = _parse_availability(av_obj)
     if df.empty:
-        _status("OK", "availability: nicht gesetzt (optional, nur für enforcement).")
+        _status("OK", "availability: not set (optional, only for enforcement).")
         return True
 
     ok = True
@@ -390,13 +390,13 @@ def check_availability(av_obj: Any, prices: pd.DataFrame) -> bool:
         ok = False
     uniq = set(vals.dropna().astype(int).unique().tolist())
     if not uniq.issubset({0, 1}):
-        _status("FAIL", f"availability enthält Werte außerhalb {{0,1}}: {sorted(uniq)}")
+        _status("FAIL", f"availability contains values outside {{0,1}}: {sorted(uniq)}")
         ok = False
     expected = prices.shape[0] * prices.shape[1]
     if len(df) != expected:
         _status(
             "WARN",
-            f"availability Größe {len(df)} != erwartet {expected} (dates*assets)",
+            f"availability size {len(df)} != expected {expected} (dates*assets)",
         )
         ok = False
     share0 = float((vals == 0).mean())
@@ -404,7 +404,7 @@ def check_availability(av_obj: Any, prices: pd.DataFrame) -> bool:
     try:
         full_block = int((df.groupby("symbol")["available"].sum() == 0).sum())
         if full_block > 0:
-            _status("WARN", f"{full_block} Symbole sind an allen Tagen unavailable.")
+            _status("WARN", f"{full_block} symbols are unavailable on all days.")
             ok = False
     except Exception:
         pass
@@ -417,7 +417,7 @@ def main() -> int:
     if not cfgp:
         _status(
             "FAIL",
-            "Keine Konfigurationsdatei gefunden (ENV oder runs/configs/config_backtest.yaml)",
+            "No configuration file found (ENV or runs/configs/config_backtest.yaml)",
         )
         return 2
 
@@ -427,7 +427,7 @@ def main() -> int:
 
     prices_path = _resolve(base, _get(cfg, "data.prices_path"))
     if not prices_path or not prices_path.exists():
-        _status("FAIL", f"prices_path ungültig: {prices_path}")
+        _status("FAIL", f"prices_path is invalid: {prices_path}")
         return 2
 
     default_rate = float(_get(cfg, "borrow.default_rate_annual", 0.0) or 0.0)
@@ -439,7 +439,7 @@ def main() -> int:
     try:
         prices = _load_prices(prices_path)
     except Exception as e:
-        _status("FAIL", f"Preise laden fehlgeschlagen: {e}")
+        _status("FAIL", f"Failed to load prices: {e}")
         return 2
 
     print(f"Prices shape: dates={prices.shape[0]}, assets={prices.shape[1]}")
@@ -461,9 +461,9 @@ def main() -> int:
 
     print("-")
     if ok_all:
-        _status("PASS", "Borrow-Inputs sehen konsistent und plausibel aus.")
+        _status("PASS", "Borrow inputs look consistent and plausible.")
         return 0
-    _status("WARN", "Es gibt Auffälligkeiten. Details siehe oben.")
+    _status("WARN", "There are issues to review. See details above.")
     return 1
 
 

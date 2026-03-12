@@ -124,7 +124,7 @@ def write_csv_atomic(
 def write_universe_csv(df: pd.DataFrame, path: Path) -> None:
     rows = ([t] for t in df.index.tolist())
     write_csv_atomic(rows, path, header=["ticker"])
-    logger.info("Tickers geschrieben: %s (n=%d)", path, len(df))
+    logger.info("Wrote tickers: %s (n=%d)", path, len(df))
     prom_set_final(len(df))
 
 
@@ -172,7 +172,7 @@ def write_universe_ext_csv(
         tmp.parent.mkdir(parents=True, exist_ok=True)
         pd.DataFrame(columns=cols).to_csv(tmp, index=False)
         _atomic_replace(tmp, path)
-        logger.info("Tickers (extended) geschrieben: %s (n=0)", path)
+        logger.info("Wrote extended tickers: %s (n=0)", path)
         return
 
     idx = df_universe.index.astype(str)
@@ -279,7 +279,7 @@ def write_universe_ext_csv(
     tmp.parent.mkdir(parents=True, exist_ok=True)
     out.to_csv(tmp, index=False)
     _atomic_replace(tmp, path)
-    logger.info("Tickers (extended) geschrieben: %s (n=%d)", path, len(out))
+    logger.info("Wrote extended tickers: %s (n=%d)", path, len(out))
 
 
 def write_manifest(
@@ -312,7 +312,7 @@ def write_manifest(
         manifest_path,
         json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default),
     )
-    logger.info("Manifest geschrieben: %s", manifest_path)
+    logger.info("Wrote manifest: %s", manifest_path)
 
 
 def write_tickers_final_txt(path: Path, tickers: list[str]) -> None:
@@ -540,12 +540,12 @@ def write_markdown_report(
             )
         lines.append("")
     if nan_raw:
-        lines.append("## NaN-Anteile (raw)")
+        lines.append("## NaN shares (raw)")
         for k, v in nan_raw.items():
             lines.append(f"- {k}: {v:.2%}")
         lines.append("")
     if nan_filt:
-        lines.append("## NaN-Anteile (filtered)")
+        lines.append("## NaN shares (filtered)")
         for k, v in nan_filt.items():
             lines.append(f"- {k}: {v:.2%}")
         lines.append("")
@@ -562,7 +562,7 @@ def write_markdown_report(
         for group in _chunk(subset, 10):
             lines.append(", ".join(group))
         if total > cap:
-            lines.append(f"... {total - cap} weitere nicht angezeigt")
+            lines.append(f"... {total - cap} more not shown")
         lines.append("")
     if failed_tickers:
         total_fail = len(failed_tickers)
@@ -574,6 +574,6 @@ def write_markdown_report(
         for group in _chunk(subset_fail, 10):
             lines.append(", ".join(group))
         if total_fail > cap_fail:
-            lines.append(f"... {total_fail - cap_fail} weitere nicht angezeigt")
+            lines.append(f"... {total_fail - cap_fail} more not shown")
         lines.append("")
     out.write_text("\n".join(lines), encoding="utf-8")

@@ -25,7 +25,7 @@ def test_read_tickers_file_csv_symbol_and_generic(tmp_path: Path):
 def test_read_tickers_file_plaintext_fallback_and_dedup(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):
-    # Force Fallback: pandas.read_csv wirft absichtlich Exception
+    # Force fallback: pandas.read_csv intentionally raises an exception
     import processing.io_utils as io_utils
 
     def _boom(*_args: Any, **_kwargs: Any):
@@ -36,7 +36,7 @@ def test_read_tickers_file_plaintext_fallback_and_dedup(
     p = tmp_path / "tickers.txt"
     p.write_text("Apple AAPL\nMeta META\nAAPL\n", encoding="utf-8")
 
-    # Fallback liest Zeilen, nimmt letztes Token und dedupliziert stabil
+    # Fallback reads lines, takes the last token, and deduplicates stably
     out = read_tickers_file(p)
     assert out == ["AAPL", "META"]
 

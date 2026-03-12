@@ -94,7 +94,7 @@ def test_resolve_full_yaml_env(monkeypatch, tmp_path: Path):
 
 
 def test_runner_dry_run(monkeypatch, tmp_path: Path, caplog):
-    # Fake da_main, damit nichts Schweres läuft
+    # fake da_main so nothing heavy runs
     called = {"n": 0}
 
     def fake_main(**kwargs):
@@ -128,7 +128,7 @@ def test_runner_invokes_main_with_cfg_and_overrides(monkeypatch, tmp_path: Path)
         encoding="utf-8",
     )
 
-    # --cfg direkt übergeben
+    # Pass --cfg directly
     monkeypatch.setattr(sys, "argv", ["runner", "--cfg", str(cfgp), "--quick"])
     rc = ra.main()
     assert rc == 0 and captured.get("quick") is True

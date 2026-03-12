@@ -29,17 +29,17 @@ def _df_for_grid() -> pd.DataFrame:
 def test_build_trading_index_leader_intersection_union():
     raw = _df_for_grid()
 
-    # leader: Spalte mit den meisten Nicht-NaNs -> hier A (3 Werte)
+    # leader: column with the most non-NaNs -> A here (3 values)
     idx_leader = build_trading_index(raw, mode="leader")
     assert isinstance(idx_leader, pd.DatetimeIndex)
     assert len(idx_leader) == 3
     assert idx_leader.is_monotonic_increasing
 
-    # intersection: gemeinsame Zeitpunkte ohne NaN in allen Spalten -> nur 2020-01-06
+    # intersection: timestamps shared without NaN in all columns -> only 2020-01-06
     idx_inter = build_trading_index(raw, mode="intersection")
     assert list(idx_inter) == [pd.Timestamp("2020-01-06T00:00:00Z")]
 
-    # union: alle Zeitpunkte, die irgendwo valide sind
+    # union: all timestamps that are valid somewhere
     idx_union = build_trading_index(raw, mode="union")
     assert list(idx_union) == list(
         pd.DatetimeIndex(sorted(raw.dropna(how="all").index.unique()))
@@ -47,7 +47,7 @@ def test_build_trading_index_leader_intersection_union():
 
 
 def test_build_trading_index_calendar_fallback(monkeypatch: pytest.MonkeyPatch):
-    # Stub für pandas_market_calendars → schedule wirft → Fallback auf bdate_range
+    # Stub for pandas_market_calendars -> schedule raises -> fallback to bdate_range
     fake = types.ModuleType("pandas_market_calendars")
 
     class _Cal:
@@ -63,7 +63,7 @@ def test_build_trading_index_calendar_fallback(monkeypatch: pytest.MonkeyPatch):
     end = pd.to_datetime(raw.index.max())
     idx_cal = build_trading_index(raw, mode="calendar", calendar="XNYS")
 
-    # Erwartung exakt wie bdate_range (Fallback)
+    # expectation exactly like bdate_range (fallback)
     exp = pd.bdate_range(start=start, end=end)
     assert isinstance(idx_cal, pd.DatetimeIndex)
     assert list(idx_cal) == list(exp)
@@ -71,9 +71,9 @@ def test_build_trading_index_calendar_fallback(monkeypatch: pytest.MonkeyPatch):
 
 def test_robust_outlier_mask_and_scrub_outliers_detects_spike():
     """
-    Wichtig: Bei perfekt konstanten Returns wäre MAD=0 → mask=False.
-    Wir addieren deterministischen Kleinjitter, damit MAD>0 und der Spike
-    zuverlässig geflaggt wird (entspricht realistischen Daten).
+    Important: with perfectly constant returns, MAD would be 0 -> mask=False.
+    We add deterministic tiny jitter so MAD>0 and the spike
+    the spike is flagged reliably (matches realistic data).
     """
     rng = np.random.default_rng(12345)
     pre = 100.0 + rng.normal(0, 0.01, 20)
@@ -87,7 +87,7 @@ def test_robust_outlier_mask_and_scrub_outliers_detects_spike():
 
     m = robust_outlier_mask(s, zscore=3.0, window=9, use_log_returns=True)
     assert m.dtype == bool
-    assert m.any(), "Spike in Returns sollte als Ausreißer erkannt werden"
+    assert m.any(), "Spike in returns should be detected as an outlier"
 
     s2, n = scrub_outliers(s, zscore=3.0, window=9, use_log_returns=True)
     assert n >= 1

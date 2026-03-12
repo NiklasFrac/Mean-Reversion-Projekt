@@ -30,6 +30,23 @@ def test_estimate_beta_short_and_exception(monkeypatch: pytest.MonkeyPatch) -> N
     assert baseline._estimate_beta_ols_with_intercept(s, s) == 1.0
 
 
+def test_estimate_beta_details_accepts_only_positive_values() -> None:
+    x = pd.Series([1.0, 2.0, 3.0])
+    y_pos = pd.Series([2.0, 4.0, 6.0])
+    beta_pos, reason_pos = strat_helpers.estimate_beta_ols_with_intercept_details(
+        y_pos, x
+    )
+    assert beta_pos == pytest.approx(2.0)
+    assert reason_pos is None
+
+    y_neg = pd.Series([3.0, 2.0, 1.0])
+    beta_neg, reason_neg = strat_helpers.estimate_beta_ols_with_intercept_details(
+        y_neg, x
+    )
+    assert beta_neg is None
+    assert reason_neg == "beta_non_positive"
+
+
 def test_baseline_positions_exit_branches() -> None:
     idx = pd.date_range("2024-01-01", periods=4, freq="D")
     z = pd.Series([-2.5, 2.5, 0.0, np.nan], index=idx)

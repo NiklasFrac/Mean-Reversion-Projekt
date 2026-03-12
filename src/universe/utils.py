@@ -52,7 +52,7 @@ def _enforce_canary(
     n = int(df_filtered.shape[0])
     if min_valid_tickers > 0 and n < int(min_valid_tickers):
         raise RuntimeError(
-            f"Canary: nur {n} gueltige Ticker < min_valid_tickers={int(min_valid_tickers)}"
+            f"Canary: only {n} valid tickers < min_valid_tickers={int(min_valid_tickers)}"
         )
 
     basis = "disabled"
@@ -110,7 +110,7 @@ def _enforce_canary(
                 f"{name}={share * 100.0:.1f}%" for name, _, share in failing
             )
             raise RuntimeError(
-                f"Canary: NaN-Anteil {detail} "
+                f"Canary: NaN share {detail} "
                 f"> max_nan_pct={float(max_nan_pct) * 100.0:.1f}% "
                 f"(basis={basis}, metric={metric})"
             )

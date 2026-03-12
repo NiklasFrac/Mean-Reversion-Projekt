@@ -27,6 +27,6 @@ def test_load_parquet(tmp_path: Path):
 
 def test_load_feather(tmp_path: Path):
     p = tmp_path / "p.feather"
-    _make_df().reset_index().to_feather(p)  # index explizit als Spalte
+    _make_df().reset_index().to_feather(p)  # index explicitly as a column
     df = load_filled_data(p)
     assert df.shape == (3, 2)

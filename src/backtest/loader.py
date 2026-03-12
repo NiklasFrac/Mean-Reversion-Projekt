@@ -23,6 +23,7 @@ from backtest.utils.alpha import (
     pair_prefilter,
     resolve_half_life_cfg,
 )
+from backtest.utils import strategy as _strategy_helpers
 from backtest.utils.tz import (
     NY_TZ,
     align_ts_to_index,
@@ -893,6 +894,21 @@ def prepare_pairs_data(  # noqa: C901
                 filtered_reasons[pair] = f"prefilter_error:{e}"
                 if verbose:
                     logger.debug("Pair %s prefilter error: %s", pair, e)
+                continue
+        else:
+            beta_hat, beta_reason = (
+                _strategy_helpers.estimate_beta_ols_with_intercept_details(
+                    s1_pref, s2_pref
+                )
+            )
+            if beta_hat is None:
+                filtered_reasons[pair] = str(beta_reason or "beta_estimation_failed")
+                if verbose:
+                    logger.debug(
+                        "Pair %s skipped due to invalid beta without prefilter: %s",
+                        pair,
+                        filtered_reasons[pair],
+                    )
                 continue
 
         adv_y = _fetch_metric(adv_map, t1)

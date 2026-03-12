@@ -81,9 +81,9 @@ def _is_intraday_like(index: pd.DatetimeIndex) -> bool:
 
 def ensure_ny_index(df: pd.DataFrame, *, vendor_tz: str | None = "UTC") -> pd.DataFrame:
     """
-    Canonicalisiert Zeitachse auf America/New_York (tz-aware), sortiert und dedupliziert.
-    - Naiver Index wird als vendor_tz (Default UTC) interpretiert.
-    - Doppelte Walltimes (DST Fall-Back) -> keep='last' (Korrektur bevorzugt).
+    Canonicalizes the time axis to America/New_York (tz-aware), sorted and deduplicated.
+    - Naive index is interpreted as vendor_tz (default UTC).
+    - Duplicate wall times (DST fall-back) -> keep='last' (prefer correction).
     """
     if df.empty:
         return df
@@ -129,8 +129,8 @@ def pick_time_grid(
     calendar_code: str = "XNYS",
 ) -> pd.DatetimeIndex:
     """
-    Referenz-Grid fuer Wide-Frame. Fuer Intraday bleibt die Grid-Wahl unkritisch,
-    weil wir *keine* erfundenen Fills zulassen (Fuellen nur auf tradable Mask).
+    Reference grid for a wide frame. For intraday data the grid choice remains non-critical,
+    because we do *not* allow invented fills (fill only on the tradable mask).
     """
     mode = str(mode or "leader").lower()
     if raw.empty:
@@ -203,10 +203,10 @@ def build_tradable_mask(
     rth_only: bool = True,
 ) -> pd.Series:
     """
-    Liefert pro Timestamp (NY tz) ein Bool (True = im zulaessigen Handelsfenster).
-    Fuer Daily: True wenn Tag ein Handelstag ist.
-    Fuer Intraday: True falls innerhalb (open, close) des Kalenders (RTH wenn rth_only).
-    Fallback: Business-Day fuer Daily; fuer Intraday -> True (keine Erfindung durch Fuell-Policy).
+    Returns one bool per timestamp (NY tz) (True = within the allowed trading window).
+    For daily: True if the day is a trading day.
+    For intraday: True if inside the calendar's (open, close) interval (RTH if rth_only).
+    Fallback: business day for daily; for intraday -> True (no invented values due to fill policy).
     """
     if len(index) == 0:
         return pd.Series([], dtype=bool, index=index)
@@ -246,7 +246,7 @@ def build_tradable_mask(
         close_norm = closes.copy()
         if open_norm.index.tz is None:
             open_norm.index = open_norm.index.tz_localize("America/New_York")
-        if close_norm.index.tz is None:
+        # Safety: disjointness (optional, but O(n) - therefore not enforced via assert)
             close_norm.index = close_norm.index.tz_localize("America/New_York")
         open_norm.index = open_norm.index.tz_localize(None).normalize()
         close_norm.index = close_norm.index.tz_localize(None).normalize()

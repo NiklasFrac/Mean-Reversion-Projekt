@@ -22,7 +22,7 @@ def compute_adv_series(
     stat: str = "mean",
 ) -> pd.DataFrame:
     """
-    Rollierender ADV je Spalte als Zeitreihe (DataFrame).
+    Rolling ADV per column as a time series (DataFrame).
     """
     if vol.empty:
         return vol.copy()
@@ -45,8 +45,8 @@ def compute_adv(
     stat: str = "mean",
 ) -> pd.Series:
     """
-    Aktueller ADV je Spalte als Skalar (Serie mit einem Wert pro Spalte).
-    = letzte Zeile von compute_adv_series(...).
+    Current ADV per column as a scalar (Series with one value per column).
+    = last row of compute_adv_series(...).
     """
     r = compute_adv_series(vol, window=window, min_periods=min_periods, stat=stat)
     return r.iloc[-1].astype(float) if not r.empty else pd.Series(dtype=float)

@@ -173,7 +173,9 @@ def test_baseline_strategy_markov_overlay_can_remove_entry(
     )
 
     monkeypatch.setattr(
-        baseline, "_estimate_beta_ols_with_intercept", lambda *_a, **_k: 1.0
+        baseline,
+        "_estimate_positive_beta_ols_with_intercept",
+        lambda *_a, **_k: (1.0, None),
     )
     monkeypatch.setattr(
         baseline,
@@ -192,16 +194,6 @@ def test_baseline_strategy_markov_overlay_can_remove_entry(
             ),
         ),
     )
-
-    captured_disabled: dict[str, pd.Series] = {}
-    captured_enabled: dict[str, pd.Series] = {}
-
-    def _capture_into(store: dict[str, pd.Series]):
-        def _fake_from_signals(**kwargs: object) -> pd.DataFrame:
-            store["signals"] = kwargs["signals"].copy()  # type: ignore[index]
-            return pd.DataFrame()
-
-        return staticmethod(_fake_from_signals)
 
     cfg_base = {
         "backtest": {
@@ -226,10 +218,7 @@ def test_baseline_strategy_markov_overlay_can_remove_entry(
         "execution": {"max_participation": 0.0},
     }
 
-    monkeypatch.setattr(
-        baseline.TradeBuilder, "from_signals", _capture_into(captured_disabled)
-    )
-    BaselineZScoreStrategy(cfg_base, borrow_ctx=None)(
+    out_disabled = BaselineZScoreStrategy(cfg_base, borrow_ctx=None)(
         {"AAA-BBB": {"prices": prices, "meta": {"t1": "AAA", "t2": "BBB"}}}
     )
 
@@ -243,17 +232,13 @@ def test_baseline_strategy_markov_overlay_can_remove_entry(
             "min_state_observations": 2,
         },
     }
-    monkeypatch.setattr(
-        baseline.TradeBuilder, "from_signals", _capture_into(captured_enabled)
-    )
-    BaselineZScoreStrategy(cfg_markov, borrow_ctx=None)(
+    out_enabled = BaselineZScoreStrategy(cfg_markov, borrow_ctx=None)(
         {"AAA-BBB": {"prices": prices, "meta": {"t1": "AAA", "t2": "BBB"}}}
     )
 
-    sig_disabled = captured_disabled["signals"]
-    sig_enabled = captured_enabled["signals"]
+    intents_disabled = out_disabled["AAA-BBB"]["intents"]
 
-    assert int(sig_disabled.loc[idx[10]]) == -1
-    assert int(sig_disabled.loc[idx[11]]) == -1
-    assert int(sig_enabled.loc[idx[10]]) == 0
-    assert int(sig_enabled.loc[idx[11]]) == 0
+    assert len(intents_disabled) == 1
+    assert pd.Timestamp(intents_disabled.loc[0, "signal_date"]) == idx[10]
+    assert int(intents_disabled.loc[0, "signal"]) == -1
+    assert "AAA-BBB" not in out_enabled

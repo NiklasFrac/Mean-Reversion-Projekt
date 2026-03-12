@@ -64,8 +64,8 @@ def robust_outlier_mask_causal(
     max_gap_bars: int | None = None,
 ) -> pd.Series:
     """
-    Kausale (backward-looking) Median/MAD Heuristik auf Returns.
-    Kein center=True -> keine Zukunfts-Infos.
+    Causal (backward-looking) Median/MAD heuristic on returns.
+    No center=True -> no future information.
     """
     s = pd.to_numeric(series, errors="coerce").astype("float64")
     if s.dropna().size < 5:
@@ -95,8 +95,8 @@ def scrub_outliers_causal(
     max_gap_bars: int | None = None,
 ) -> tuple[pd.Series, int]:
     """
-    Markiert die Zielwerte P_t der als Ausreisser erkannten Returns als NaN.
-    Optional: exclude_dates (z.B. Ex-Dividende/-Split Tage) -> keine Markierung dort.
+    Marks the target values P_t of returns detected as outliers as NaN.
+    Optional: exclude_dates (e.g. ex-dividend/-split days) -> no marking there.
     """
     mask = robust_outlier_mask_causal(
         series,

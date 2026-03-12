@@ -30,7 +30,7 @@ def test__read_df_any_csv_branch(tmp_path: Path):
     got = ins._read_df_any(p)
     assert isinstance(got, pd.DataFrame)
     assert got.shape == (4, 2)
-    assert got.index.tz is not None  # parse_dates=True behält UTC
+    assert got.index.tz is not None  # parse_dates=True preserves UTC
 
 
 def test_load_universe_paths_manifest_variants(tmp_path: Path):
@@ -53,7 +53,7 @@ def test_load_universe_paths_manifest_variants(tmp_path: Path):
 
     # 3) Kein Manifest -> Fallback via latest()
     (d / "universe_manifest.json").unlink()
-    # ensure raw_prices.pkl exists; latest() soll das nehmen
+    # ensure raw_prices.pkl exists; latest() should pick it
     u3 = ins.load_universe_paths(d)
     assert Path(u3["raw_prices"]) == raw
 
@@ -63,14 +63,14 @@ def test_main_verdict_likely_processing_issue(
 ):
     """
     Deckt main()-Branch:
-      - Universe vorhanden (raw_prices.*),
-      - Processing fehlt -> LIKELY_PROCESSING_ISSUE
+      - Universe present (raw_prices.*),
+      - Processing missing -> LIKELY_PROCESSING_ISSUE
     """
     data_dir = tmp_path / "runs" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)
 
     raw = data_dir / "raw_prices.pkl"
-    _df(rows=5, cols=4).to_pickle(raw)  # nur Universe, kein filled_*
+    _df(rows=5, cols=4).to_pickle(raw)  # only universe, no filled_*
 
     rc = ins.main(["--data-dir", str(data_dir)])
     out = capsys.readouterr().out
@@ -83,7 +83,7 @@ def test_main_verdict_likely_universe_issue_small(
 ):
     """
     Deckt main()-Branch:
-      - Sehr wenige Universe-Spalten (<=10) und filled_cols <= raw_cols -> LIKELY_UNIVERSE_ISSUE
+      - Very few universe columns (<=10) and filled_cols <= raw_cols -> LIKELY_UNIVERSE_ISSUE
     """
     data_dir = tmp_path / "runs" / "data"
     data_dir.mkdir(parents=True, exist_ok=True)

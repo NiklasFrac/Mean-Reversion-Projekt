@@ -126,6 +126,79 @@ def test_exec_one_leg_maker_not_touched_blocks() -> None:
     assert rep["entry_filled_size"] == 0
 
 
+def test_exec_order_maker_partial_without_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ob = lob.OrderBook(
+        mid_price=100.0, levels=1, size_per_level=10, tick=0.01, seed=7
+    )
+    ts = pd.Timestamp("2024-01-02")
+
+    monkeypatch.setattr(lob, "_maker_turnover_target", lambda *_args, **_kwargs: 4)
+
+    rep = lob._exec_order(
+        ob,
+        symbol="AAA",
+        side="buy",
+        qty=5,
+        mid=100.0,
+        ts=ts,
+        liq_model=None,
+        flow_cfg={
+            "mode": "maker",
+            "maker_price": "best",
+            "maker_max_top_frac": 1.0,
+            "fallback_to_taker": False,
+        },
+        is_short=False,
+        maker_state={"steps_per_day": 1, "_liq_depth_top": 10},
+    )
+
+    assert rep["role"] == "maker"
+    assert int(rep["filled_size"]) == 4
+    assert int(rep["unfilled_size"]) == 1
+    assert int(rep["maker_filled_size"]) == 4
+    assert int(rep["taker_filled_size"]) == 0
+    assert sum(int(qty) for _, qty in rep["fills"]) == 4
+
+
+def test_exec_order_maker_partial_with_taker_fallback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ob = lob.OrderBook(
+        mid_price=100.0, levels=2, size_per_level=10, tick=0.01, seed=7
+    )
+    ts = pd.Timestamp("2024-01-02")
+
+    monkeypatch.setattr(lob, "_maker_turnover_target", lambda *_args, **_kwargs: 2)
+
+    rep = lob._exec_order(
+        ob,
+        symbol="AAA",
+        side="buy",
+        qty=5,
+        mid=100.0,
+        ts=ts,
+        liq_model=None,
+        flow_cfg={
+            "mode": "maker",
+            "maker_price": "best",
+            "maker_max_top_frac": 1.0,
+            "fallback_to_taker": True,
+        },
+        is_short=False,
+        maker_state={"steps_per_day": 1, "_liq_depth_top": 10},
+    )
+
+    assert rep["role"] == "taker"
+    assert str(rep["role_detail"]) == "maker_partial_taker"
+    assert int(rep["filled_size"]) == 5
+    assert int(rep["unfilled_size"]) == 0
+    assert int(rep["maker_filled_size"]) == 2
+    assert int(rep["taker_filled_size"]) == 3
+    assert sum(int(qty) for _, qty in rep["fills"]) == 5
+
+
 def test_annotate_with_lob_fill_model_scaling(monkeypatch: pytest.MonkeyPatch) -> None:
     idx = pd.date_range("2024-01-01", periods=3, freq="D", tz="America/New_York")
     price_data = {
@@ -161,6 +234,7 @@ def test_annotate_with_lob_fill_model_scaling(monkeypatch: pytest.MonkeyPatch) -
     out = lob.annotate_with_lob(trades, price_data, cfg_obj, market_data_panel=panel)
     assert "exec_fill_frac" in out.columns
     assert out["exec_fill_frac"].iloc[0] == pytest.approx(0.5)
+    assert out["exec_fill_expected"].iloc[0] == pytest.approx(0.5)
     assert "exec_rejected" in out.columns
 
 
@@ -197,20 +271,17 @@ def test_annotate_with_lob_fill_model_scaling_preserves_explicit_units(
     )
 
     def _fake_fill_fraction(**_kwargs):
-        return 0.5, {"expected": 0.5}
+        return 0.0, {"expected": 0.5}
 
     monkeypatch.setattr(lob, "sample_package_fill_fraction", _fake_fill_fraction)
-    monkeypatch.setattr(
-        lob,
-        "_seeded_rng",
-        lambda *_args, **_kwargs: type("R", (), {"random": lambda self: 0.0})(),
-    )
 
     out = lob.annotate_with_lob(trades, price_data, cfg_obj, market_data_panel=panel)
     assert int(out.loc[0, "y_units"]) == 10
     assert int(out.loc[0, "x_units"]) == -10
     assert str(out.loc[0, "exec_entry_status"]) in {"filled", "delayed"}
     assert bool(out.loc[0, "exec_rejected"]) is False
+    assert float(out.loc[0, "exec_fill_frac"]) == pytest.approx(0.0)
+    assert float(out.loc[0, "exec_fill_expected"]) == pytest.approx(0.5)
 
 
 def test_lob_volume_zero_blocks_entry() -> None:
@@ -309,6 +380,7 @@ def test_lob_rejects_when_exit_unfilled() -> None:
     assert bool(out.loc[0, "exec_rejected"]) is False
     assert str(out.loc[0, "exec_exit_status"]) == "forced"
     assert bool(out.loc[0, "exec_forced_exit"]) is True
+    assert float(out.loc[0, "exec_emergency_penalty_cost"]) < 0.0
 
 
 def test_resolve_exec_lob_cfg_prefers_direct_then_execution_lob() -> None:

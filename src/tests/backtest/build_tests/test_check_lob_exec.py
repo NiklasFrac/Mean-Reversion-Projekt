@@ -11,14 +11,14 @@ def main():
     if not paths:
         paths = sorted(glob.glob(str(root / "results" / "wf" / "trades_te_*.csv")))
     if not paths:
-        print("❗ Keine trades_te_*.csv gefunden (results/ oder results/wf/).")
+        print("No trades_te_*.csv found (results/ or results/wf/).")
         return
 
     total_rows = 0
     total_exec_cols = set()
     total_filled = {}
 
-    print(f"Gefundene Dateien: {len(paths)}")
+    print(f"Found files: {len(paths)}")
     for p in paths:
         df = pd.read_csv(p, index_col=0)
         total_rows += len(df)
@@ -37,16 +37,16 @@ def main():
             n_lob = int(df["lob_net_pnl"].notna().sum())
             print(f"   lob_net_pnl              filled={n_lob}")
 
-    print("\n===== Zusammenfassung =====")
-    print(f"Gesamtzeilen (TE): {total_rows}")
-    print(f"Verschiedene exec_-Spalten: {len(total_exec_cols)}")
+    print("\n===== Summary =====")
+    print(f"Total rows (TE): {total_rows}")
+    print(f"Distinct exec_ columns: {len(total_exec_cols)}")
     filled_sum = sum(total_filled.values())
-    print(f"Summe gefüllter exec_-Felder: {filled_sum}")
+    print(f"Sum of filled exec_ fields: {filled_sum}")
     if filled_sum > 0:
-        print("✅ LOB-Ausführung aktiv: exec_-Annotationen vorhanden.")
+        print("LOB execution active: exec_ annotations present.")
     else:
         print(
-            "⚠️  Keine gefüllten exec_-Felder gefunden. YAML prüfen (execution.mode: lob) oder Trade-Felder (Leg/Preise) fehlen."
+            "No filled exec_ fields found. Check YAML (execution.mode: lob) or missing trade fields (legs/prices)."
         )
 
 

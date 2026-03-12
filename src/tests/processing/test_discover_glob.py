@@ -11,7 +11,7 @@ from processing.raw_loader import _discover
 def test__discover_picks_most_recent(tmp_path: Path, monkeypatch):
     monkeypatch.chdir(tmp_path)
 
-    # Drei Dateien, unterschiedliche mtimes
+    # three files, different mtimes
     f1 = tmp_path / "raw_prices.1.pkl"
     f2 = tmp_path / "raw_prices.2.pkl"
     f3 = tmp_path / "raw_prices.3.pkl"

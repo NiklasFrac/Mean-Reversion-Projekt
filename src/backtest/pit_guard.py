@@ -16,7 +16,7 @@ from backtest.windowing.splits import (
 from backtest.windowing.eval import synthesize_analysis_split
 from backtest.utils.tz import align_ts_to_index, to_naive_utc, utc_now
 
-# Typalias fÃ¼r deinen Window-Runner (z. B. wf_core._process_window)
+# Type alias for the window runner (e.g. wf_core._process_window)
 WindowRunner = Callable[
     [
         int,
@@ -44,18 +44,18 @@ _LOG.setLevel(logging.INFO)
 @dataclass(frozen=True)
 class PitGuardConfig:
     """
-    Feine Steuerung fÃ¼r den PIT-Guard.
+    Fine-grained controls for the PIT guard.
 
-    test_len            Limit der Test-LÃ¤nge (Bars); None => aus YAML
-    atol_equity/rtol    Toleranz fÃ¼r Equity-Gleichheit
-    compare_trades      ob Trades im Testfenster verglichen werden
-    compare_costs       Kosten-/Borrow-Felder prÃ¼fen (net_pnl, borrow_cost, buyin_penalty_cost, total_costs)
-    compare_forced      hard_exit/hard_exit_reason prÃ¼fen
-    availability_scope  "all" | "pit" | "window" (wie in deiner Pipeline)
-    noise_sigma         Std-Abweichung der Multiplikativ-Noise fÃ¼r Zukunftspreise
-    seed                RNG-Seed (default: cfg['seed'] oder 42)
+    test_len            Test-length limit (bars); None => from YAML
+    atol_equity/rtol    Tolerance for equity equality
+    compare_trades      Whether trades in the test window are compared
+    compare_costs       Check cost/borrow fields (net_pnl, borrow_cost, buyin_penalty_cost, total_costs)
+    compare_forced      Check hard_exit/hard_exit_reason
+    availability_scope  "all" | "pit" | "window" (as in your pipeline)
+    noise_sigma         Standard deviation of multiplicative noise for future prices
+    seed                RNG seed (default: cfg['seed'] or 42)
 
-    tol_cost_abs        absoluter Toleranzwert fÃ¼r Kostenvergleiche
+    tol_cost_abs        Absolute tolerance for cost comparisons
     """
 
     enabled: bool = False
@@ -129,7 +129,7 @@ def pit_guard_config_from_cfg(cfg: Mapping[str, Any]) -> PitGuardConfig:
 
 def sanitize_cfg_for_pit(cfg: Mapping[str, Any], pg: PitGuardConfig) -> dict[str, Any]:
     """
-    Optionale Module fÃƒÂ¼r PIT deaktivieren, um deterministische und schnelle Guards zu erlauben.
+    Disable optional modules for PIT to allow deterministic and fast guards.
     """
     out = dict(cfg)
     if pg.keep_optional_modules:
@@ -279,7 +279,7 @@ def _sha256_bytes(b: bytes) -> str:
 def _fingerprint_equity(eq: pd.Series) -> str:
     if eq is None or eq.empty:
         return _sha256_bytes(b"empty_equity")
-    # Index -> int64[ns] als ndarray (robust Ã¼ber pandas Versionen)
+    # Index -> int64[ns] as ndarray (robust across pandas versions)
     idx = pd.to_datetime(eq.index, errors="coerce")
     if hasattr(idx, "asi8"):
         i64 = idx.asi8  # ndarray[int64]
@@ -296,8 +296,8 @@ def _safe_cols(df: pd.DataFrame, cols: list[str]) -> list[str]:
 
 def _normalize_trade_df_for_fp(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Reduziere auf deterministische, PIT-relevante Felder und normalisiere Typen.
-    Beinhaltet Borrow-/Kosten- und Forced-Felder.
+    Reduce to deterministic, PIT-relevant fields and normalize types.
+    Includes borrow/cost and forced-exit fields.
     """
     if df is None or df.empty:
         return pd.DataFrame()
@@ -322,13 +322,13 @@ def _normalize_trade_df_for_fp(df: pd.DataFrame) -> pd.DataFrame:
     cols = _safe_cols(df, cols_pref)
     x = df[cols].copy()
 
-    # Datumsfelder -> datetime64[ns]
+    # Date fields -> datetime64[ns]
     for c in ("entry_date", "exit_date"):
         if c in x.columns:
             dt = to_naive_utc(pd.to_datetime(x[c], errors="coerce"))
             x[c] = dt
 
-    # Numerik -> float64 (NaN -> 0.0 fÃ¼r deterministische Bytes)
+    # Numeric fields -> float64 (NaN -> 0.0 for deterministic bytes)
     num_cols = [
         c
         for c in (
@@ -346,17 +346,17 @@ def _normalize_trade_df_for_fp(df: pd.DataFrame) -> pd.DataFrame:
     for c in num_cols:
         x[c] = pd.to_numeric(x[c], errors="coerce").fillna(0.0).astype("float64")
 
-    # Bool/Flags
+    # Bool/flags
     for c in ("hard_exit",):
         if c in x.columns:
             x[c] = pd.Series(x[c]).fillna(False).astype(bool)
 
-    # GrÃ¼nde/Text
+    # Reasons/text
     for c in ("hard_exit_reason",):
         if c in x.columns:
             x[c] = pd.Series(x[c]).fillna("").astype(str)
 
-    # stabile Sortierung
+    # Stable sorting
     sort_keys = [
         c
         for c in ("entry_date", "exit_date", "pair", "symbol", "y_symbol", "x_symbol")
@@ -386,7 +386,7 @@ def _fingerprint_trades(df: pd.DataFrame) -> str:
                 pd.to_numeric(s, errors="coerce").astype("float64").to_numpy().tobytes()
             )
         else:
-            # Strings/Objekte -> utf-8 mit Separator + Nullbyte als Spaltentrenner
+            # Strings/objects -> utf-8 with separator + null byte as column delimiter
             bufs.append(
                 "|".join("" if pd.isna(v) else str(v) for v in s).encode("utf-8")
             )
@@ -409,36 +409,36 @@ def assert_no_future_dependency(
     availability_long: Any | None = None,
     availability_scope: str | None = None,
     pg: PitGuardConfig | None = None,
-    # Optional: separater Runner fÃ¼r "mutierte Zukunft"
+    # Optional: separate runner for "mutated future"
     runner_mutated: WindowRunner | None = None,
-    # Optional: Fingerprint-Label (z. B. Segment-ID)
+    # Optional: fingerprint label (e.g. segment ID)
     label: str | None = None,
 ) -> dict[str, Any]:
     """
-    **PIT-/Look-Ahead-Guard (erweitert)**:
-    Mutiert NUR die Zukunft (> Train+Test) und erwartet IDENTISCHE Test-Outputs
-    inkl. Borrow-/Costs-/Forced-Feldern.
-    Bricht mit prÃ¤zisem AssertionError, falls ein Leak vorliegt.
+    **Extended PIT/look-ahead guard**:
+    Mutates ONLY the future (> Train+Test) and expects IDENTICAL test outputs
+    including borrow/cost/forced-exit fields.
+    Fails with a precise AssertionError if a leak is present.
 
-    Wenn `runner_mutated` Ã¼bergeben ist, wird dieser im 2. Lauf verwendet.
+    If `runner_mutated` is provided, it is used in the second run.
     """
     if pg is None:
         pg = PitGuardConfig()
 
     eff_av_scope = str(availability_scope or pg.availability_scope or "all")
 
-    # --- Input-Validierung & Basismetrik
+    # --- Input validation & base metric
     if not isinstance(prices.index, pd.DatetimeIndex):
-        raise AssertionError("prices.index muss ein DatetimeIndex sein.")
+        raise AssertionError("prices.index must be a DatetimeIndex.")
     if "backtest" not in cfg:
-        raise AssertionError("cfg['backtest'] fehlt.")
+        raise AssertionError("cfg['backtest'] is missing.")
 
     # Conservative mode only: derive cut from backtest.splits.{train,test}.
     splits = require_backtest_splits(
         cfg,
         keys=("train", "test"),
         err_cls=AssertionError,
-        err_msg="cfg['backtest']['splits'].{train,test} fehlt (conservative mode).",
+        err_msg="cfg['backtest']['splits'].{train,test} is missing (conservative mode).",
     )
 
     idx = prices.index
@@ -450,20 +450,20 @@ def assert_no_future_dependency(
         splits,
         "train",
         err_cls=AssertionError,
-        err_msg="backtest.splits.{train,test} mÃ¼ssen start/end enthalten.",
+        err_msg="backtest.splits.{train,test} must contain start/end.",
     )
     te = require_split_start_end(
         splits,
         "test",
         err_cls=AssertionError,
-        err_msg="backtest.splits.{train,test} mÃ¼ssen start/end enthalten.",
+        err_msg="backtest.splits.{train,test} must contain start/end.",
     )
 
     tr0, tr1 = _as_ts(tr["start"]), _as_ts(tr["end"])
     te0, te1 = _as_ts(te["start"]), _as_ts(te["end"])
     if not (tr0 <= tr1 < te0 <= te1):
         raise AssertionError(
-            "backtest.splits mÃ¼ssen disjunkt & geordnet sein: train < test."
+            "backtest.splits must be disjoint and ordered: train < test."
         )
 
     # Default: cut at test_end. Optional override: shorten test_len in bars.
@@ -490,16 +490,16 @@ def assert_no_future_dependency(
     cut = min(len(idx), te_i0 + te_n)
     if cut <= 0 or cut > len(idx):
         raise AssertionError(
-            f"Unplausible Split-LÃ¤ngen: test_len={te_n}, len(prices)={len(idx)}."
+            f"Implausible split lengths: test_len={te_n}, len(prices)={len(idx)}."
         )
-    cut_ts = idx[cut - 1]  # letzter Tag im (ggf. gekÃ¼rzten) Testfenster
+    cut_ts = idx[cut - 1]  # last day in the (possibly shortened) test window
 
-    # --- Seed-Handling
+    # --- Seed handling
     seed = int(pg.seed) if pg.seed is not None else int(cfg.get("seed", 42))
     rng = np.random.default_rng(seed)
 
     # ==========================
-    # Lauf 1: Referenz
+    # Run 1: reference
     # ==========================
     start_idx = 0
     res_ref = _call_window_runner(
@@ -531,7 +531,7 @@ def assert_no_future_dependency(
     )
 
     # ==========================
-    # Zukunft mutieren (Preise)
+    # Mutate future (prices)
     # ==========================
     mutated_prices = _strict_df_copy(prices)
     if cut < len(mutated_prices) and pg.noise_sigma > 0.0:
@@ -554,7 +554,7 @@ def assert_no_future_dependency(
     )
 
     # ==========================
-    # Lauf 2: Mutierte Zukunft
+    # Run 2: mutated future
     # ==========================
     run2 = runner_mutated if (runner_mutated is not None) else runner
 
@@ -586,10 +586,10 @@ def assert_no_future_dependency(
         0 if trades_te_new is None else len(trades_te_new),
     )
 
-    # --- Equity-Vergleich
+    # --- Equity comparison
     if not _allclose(eq_ref, eq_new, pg.atol_equity, pg.rtol_equity):
         msg = [
-            "PIT guard failed: Test-Equity Ã¤nderte sich beim Mutieren der Zukunft.",
+            "PIT guard failed: test equity changed when mutating the future.",
             f"- len(eq_ref)={len(eq_ref)}, len(eq_new)={len(eq_new)}",
             f"- fp_ref_eq={fp_ref_eq}",
             f"- fp_new_eq={fp_new_eq}",
@@ -612,7 +612,7 @@ def assert_no_future_dependency(
                 ]
         raise AssertionError("\n".join(msg))
 
-    # --- Trades-Presence-/Emptiness-HÃ¤rtung (vor dem inhaltlichen Vergleich)
+    # --- Trade presence/emptiness hardening (before content comparison)
     if pg.compare_trades and ((trades_te_ref is None) != (trades_te_new is None)):
         raise AssertionError(
             "PIT guard failed: trades_te presence differs between REF and MUT "
@@ -625,7 +625,7 @@ def assert_no_future_dependency(
         and (trades_te_new is not None)
     ):
         if bool(trades_te_ref.empty) != bool(trades_te_new.empty):
-            # Kleines Diagnose-Log (Fingerprints helfen bei Triaging)
+            # Small diagnostic log (fingerprints help with triage)
             _LOG.error(
                 "PIT[%s] trades_te emptiness differs (ref_empty=%s, mut_empty=%s) | "
                 "fp_ref_trades=%s fp_new_trades=%s",
@@ -639,7 +639,7 @@ def assert_no_future_dependency(
                 "PIT guard failed: trades_te emptiness differs between REF and MUT."
             )
 
-    # --- Trades-Vergleich
+    # --- Trade comparison
     if (
         pg.compare_trades
         and (trades_te_ref is not None)
@@ -648,12 +648,12 @@ def assert_no_future_dependency(
         a = _normalize_trade_df_for_fp(trades_te_ref)
         b = _normalize_trade_df_for_fp(trades_te_new)
 
-        # 1) Struktur gleich?
+        # 1) Same structure?
         if list(a.columns) != list(b.columns) or len(a) != len(b):
             raise AssertionError(
                 "\n".join(
                     [
-                        "PIT guard failed: Test-Trades Struktur Ã¤nderte sich beim Mutieren der Zukunft.",
+                        "PIT guard failed: test trades changed structure when mutating the future.",
                         f"- n_ref={len(a)} n_new={len(b)}",
                         f"- cols_ref={list(a.columns)}",
                         f"- cols_new={list(b.columns)}",
@@ -663,16 +663,16 @@ def assert_no_future_dependency(
                 )
             )
 
-        # 2) Inhalte gleich?
+        # 2) Same contents?
         if not a.equals(b):
-            # Diagnose: erste Zeile mit Unterschied
+            # Diagnostic: first differing row
             neq = (a != b).any(axis=1)
             try:
                 idxs = np.where(neq.to_numpy())[0]
             except Exception:
                 idxs = np.array([], dtype=int)
             msg = [
-                "PIT guard failed: Test-Trades Ã¤nderten sich beim Mutieren der Zukunft.",
+                "PIT guard failed: test trades changed when mutating the future.",
                 f"- n_rows={len(a)}",
                 f"- fp_ref_trades={fp_ref_tr}",
                 f"- fp_new_trades={fp_new_tr}",
@@ -686,7 +686,7 @@ def assert_no_future_dependency(
                 ]
             raise AssertionError("\n".join(msg))
 
-    # --- Kosten-/Borrow-/Forced-Checks (robuste Felder)
+    # --- Cost/borrow/forced checks (robust fields)
     def _safe_num(s: pd.Series) -> float:
         return float(pd.to_numeric(s, errors="coerce").fillna(0.0).sum())
 
@@ -694,7 +694,7 @@ def assert_no_future_dependency(
         ref = trades_te_ref
         new = trades_te_new
 
-        # Kosten
+        # Costs
         if pg.compare_costs:
             for col in ("borrow_cost", "buyin_penalty_cost", "total_costs", "net_pnl"):
                 if (col in ref.columns) and (col in new.columns):
@@ -739,7 +739,7 @@ def assert_no_future_dependency(
         with open(os.path.join(out_dir, f"pit_{(label or 'seg0')}.json"), "w") as f:
             json.dump(payload, f, indent=2)
     except Exception:
-        pass  # Logging reicht, Artefakt ist optional
+        pass  # Logging is enough; the artifact is optional
 
     # --- Fingerprint-Log (BestÃ¤tigung)
     _LOG.info(
@@ -749,7 +749,7 @@ def assert_no_future_dependency(
         fp_ref_tr,
         pd.Timestamp(cut_ts).date(),
     )
-    # wenn wir hier ankommen: Guard bestanden
+    # If we reach this point, the guard passed
     return payload
 
 
@@ -776,7 +776,7 @@ def _window_cfg_from_splits(
                 pass
 
     bt["splits"] = new_splits
-    # Deaktiviert WF im per-window cfg, damit Runner nicht erneut Windows generiert.
+    # Disable WF in the per-window cfg so the runner does not generate windows again.
     if isinstance(bt.get("walkforward"), Mapping):
         wf = dict(bt.get("walkforward") or {})
         wf["enabled"] = False
@@ -803,11 +803,11 @@ def assert_no_future_dependency_walkforward(
     include_analysis: bool = False,
 ) -> list[dict[str, Any]]:
     """
-    Walkforward PIT-Guard: iteriert ÃƒÂ¼ber alle WF-Windows und fÃƒÂ¼hrt pro Window
-    einen Future-Mutation-Check durch.
+    Walkforward PIT guard: iterates over all WF windows and runs a
+    future-mutation check per window.
 
-    Gibt eine Liste von Result-Payloads zurÃƒÂ¼ck; wirft AssertionError bei Fail
-    (fail_fast) oder am Ende zusammengefasst.
+    Returns a list of result payloads; raises AssertionError on failure
+    (`fail_fast`) or in aggregated form at the end.
     """
     import json
     import os
@@ -868,7 +868,7 @@ def assert_no_future_dependency_walkforward(
             return win.get(key)
         return None
 
-    # Auswahl der Window-Indices
+    # Select window indices
     if pg.window_indices:
         want = {int(i) for i in pg.window_indices}
         windows_sel = [w for w in windows if _win_index(w, -1) in want]
@@ -879,7 +879,7 @@ def assert_no_future_dependency_walkforward(
         windows_sel = windows_sel[: int(pg.max_windows)]
 
     if not windows_sel:
-        raise AssertionError("pit_guard: keine Walkforward-Windows ausgewÃƒÂ¤hlt.")
+        raise AssertionError("pit_guard: no walkforward windows selected.")
 
     global_end = None
     try:

@@ -28,6 +28,7 @@ from .engine_pipeline import (
 )
 from .engine_trades import (
     _asof_price_for_ts,
+    _clip_trades_to_eval_window,
     _finalize_costs_and_net,
     _finalize_trade_columns,
     _get_first_present,
@@ -36,6 +37,10 @@ from .engine_trades import (
     _restore_essential_columns,
 )
 from .engine_tz import _to_ex_tz_series, _to_ex_tz_timestamp
+from .baseline_intents import (
+    portfolio_has_intents as _portfolio_has_intents,
+    simulate_baseline_intent_portfolio,
+)
 
 __all__ = [
     "backtest_portfolio",
@@ -962,29 +967,59 @@ def _apply_execution_hooks(
         df_out = _restore_essential_columns(df_in, base_cols)
         df_out = _recompute_holding_days_inplace(df_out)
 
-        if "exec_rejected" in df_out.columns:
-            try:
-                rej = df_out["exec_rejected"].astype(bool)
-                exec_rejected_count = int(rej.sum())
+        try:
+            rej = pd.Series(False, index=df_out.index, dtype=bool)
+            if "exec_rejected" in df_out.columns:
+                rej = (
+                    pd.Series(df_out["exec_rejected"], index=df_out.index)
+                    .fillna(False)
+                    .astype(bool)
+                )
+            blocked_entry = pd.Series(False, index=df_out.index, dtype=bool)
+            if "exec_entry_status" in df_out.columns:
+                blocked_entry = (
+                    pd.Series(df_out["exec_entry_status"], index=df_out.index)
+                    .fillna("")
+                    .astype(str)
+                    .str.lower()
+                    .eq("blocked")
+                )
+            derived_rej = rej | blocked_entry
+
+            if bool(derived_rej.any()):
+                reasons = pd.Series("", index=df_out.index, dtype=object)
                 if "exec_reject_reason" in df_out.columns:
-                    try:
-                        vc = (
-                            df_out.loc[rej, "exec_reject_reason"]
-                            .fillna("")
-                            .astype(str)
-                            .value_counts()
-                        )
-                        exec_reject_reasons = {
-                            str(k): int(v) for k, v in vc.to_dict().items() if str(k)
-                        }
-                    except Exception:
-                        exec_reject_reasons = None
-                if exec_rejected_count > 0:
-                    df_out = df_out.loc[~rej].copy()
-                    df_out = _restore_essential_columns(df_out, base_cols)
-            except Exception:
+                    reasons = (
+                        pd.Series(df_out["exec_reject_reason"], index=df_out.index)
+                        .fillna("")
+                        .astype(str)
+                    )
+                fill_reason = blocked_entry & reasons.astype(str).str.strip().eq("")
+                if bool(fill_reason.any()):
+                    reasons.loc[fill_reason] = "entry_execution_blocked"
+                df_out["exec_rejected"] = derived_rej.astype(bool)
+                df_out["exec_reject_reason"] = reasons.astype(str)
+                exec_rejected_count = int(derived_rej.sum())
+                try:
+                    vc = (
+                        reasons.loc[derived_rej]
+                        .fillna("")
+                        .astype(str)
+                        .value_counts()
+                    )
+                    exec_reject_reasons = {
+                        str(k): int(v) for k, v in vc.to_dict().items() if str(k)
+                    }
+                except Exception:
+                    exec_reject_reasons = None
+                df_out = df_out.loc[~derived_rej].copy()
+                df_out = _restore_essential_columns(df_out, base_cols)
+            else:
                 exec_rejected_count = 0
                 exec_reject_reasons = None
+        except Exception:
+            exec_rejected_count = 0
+            exec_reject_reasons = None
 
         return df_out
 
@@ -1155,6 +1190,149 @@ def backtest_portfolio(
 
     # --- Calendar & eval window ------------------------------------------------
     calendar, e0, e1 = _build_calendar_and_window(cfg, price_data, ex_tz=ex_tz)
+
+    if _portfolio_has_intents(portfolio):
+        trades_df = simulate_baseline_intent_portfolio(
+            portfolio=portfolio,
+            price_data=price_data,
+            cfg_obj=cfg,
+            market_data_panel=market_data_panel,
+            adv_map=adv_map,
+            calendar=calendar,
+            initial_capital=float(cfg.initial_capital),
+        )
+        trades_df, rep = _clip_trades_to_eval_window(
+            trades_df,
+            e0=e0,
+            e1=e1,
+            price_data=price_data,
+        )
+        if int(rep.get("hard_exits", 0)) > 0:
+            logger.info(
+                "ENGINE | hard_exit(window_end)=%d",
+                int(rep.get("hard_exits", 0)),
+            )
+        if trades_df.empty:
+            stats = _flat_equity_stats(calendar, cfg=cfg, mode=mode, e0=e0, e1=e1)
+            stats.attrs.update(
+                {
+                    "exec_mode": cfg.exec_mode,
+                    "exec_lob_enabled": bool(cfg.exec_mode == "lob"),
+                    "exec_light_enabled": bool(cfg.exec_mode == "light"),
+                    "exec_rejected_count": 0,
+                    "settlement_lag_bars": int(
+                        getattr(cfg, "settlement_lag_bars", 0) or 0
+                    ),
+                }
+            )
+            for attr_name in (
+                "exec_entry_blocked_count",
+                "exec_delayed_entry_count",
+                "exec_delayed_exit_count",
+                "exec_forced_exit_count",
+                "exec_regime_histogram",
+                "entry_intents_df",
+                "state_transitions_df",
+            ):
+                if attr_name in trades_df.attrs:
+                    stats.attrs[attr_name] = trades_df.attrs[attr_name]
+            return stats, _finalize_trade_columns(trades_df)
+        essentials = [
+            c
+            for c in [
+                "entry_date",
+                "exit_date",
+                "pair",
+                "y_symbol",
+                "x_symbol",
+                "symbol",
+                "asset",
+                "ticker",
+            ]
+            if c in trades_df.columns
+        ]
+        base_cols = trades_df[essentials].copy() if essentials else pd.DataFrame()
+        trades_df, _ = _apply_pre_execution_hooks(
+            trades_df,
+            base_cols=base_cols,
+            price_data=price_data,
+            cfg=cfg,
+            calendar=calendar,
+            e0=e0,
+            borrow_ctx=borrow_ctx,
+            market_data_panel=market_data_panel,
+        )
+        try:
+            trades_df = _perf_run(
+                "pnl.finalize",
+                lambda: _finalize_costs_and_net(
+                    trades_df,
+                    calendar=calendar,
+                    price_data=price_data,
+                    borrow_ctx=borrow_ctx,
+                ),
+            )
+        except Exception as e:
+            logger.warning("PnL finalization failed -> continue without: %s", e)
+
+        trades_eval = _select_eval_trades(trades_df, e0=e0, e1=e1)
+        daily_pnl, daily_gross, mapped_rows, dropped = _map_trades_to_daily_pnl(
+            trades_eval,
+            calendar=calendar,
+            cfg=cfg,
+            price_data=price_data,
+            borrow_ctx=borrow_ctx,
+        )
+        if dropped:
+            logger.info(
+                "MTM mapping dropped %d/%d trades (missing prices or timestamps).",
+                dropped,
+                len(trades_eval),
+            )
+        stats, fin_info = _compute_equity_and_stats(
+            daily_pnl,
+            daily_gross,
+            calendar=calendar,
+            cfg=cfg,
+            trades_eval=trades_eval,
+        )
+        stats.attrs.update(
+            {
+                "EquityFinal": float(stats["equity"].iloc[-1]),
+                "EquityRawEnd": float(stats["equity"].iloc[-1]),
+                "Sharpe": float(fin_info.get("sharpe", 0.0)),
+                "CAGR": float(fin_info.get("cagr", float("nan"))),
+                "MaxDrawdown": float(fin_info.get("max_drawdown", 0.0)),
+                "WinRate": float(fin_info.get("win_rate", 0.0)),
+                "NumTrades": int(len(trades_eval)),
+                "mode": mode,
+                "eval_window_start": e0.isoformat(),
+                "eval_window_end": e1.isoformat(),
+                "mapped_trades": int(mapped_rows),
+                "pnl_mode": "mtm",
+                "mtm_dropped_trades": int(dropped),
+                "calendar_name": _calendar_name_from_cfg(cfg),
+                "calendar_source": "exchange_calendars",
+                "exec_mode": cfg.exec_mode,
+                "exec_lob_enabled": bool(cfg.exec_mode == "lob"),
+                "exec_light_enabled": bool(cfg.exec_mode == "light"),
+                "exec_rejected_count": 0,
+                "settlement_lag_bars": int(getattr(cfg, "settlement_lag_bars", 0) or 0),
+            }
+        )
+        for attr_name in (
+            "exec_entry_blocked_count",
+            "exec_delayed_entry_count",
+            "exec_delayed_exit_count",
+            "exec_forced_exit_count",
+            "exec_regime_histogram",
+            "entry_intents_df",
+            "state_transitions_df",
+        ):
+            if attr_name in trades_df.attrs:
+                stats.attrs[attr_name] = trades_df.attrs[attr_name]
+        trades_df = _finalize_trade_columns(trades_df)
+        return stats, trades_df
 
     # --- Collect & normalize portfolio trades ---------------------------------
     frames, dropped_outside_eval, hard_exit_count, total_trades_seen = (

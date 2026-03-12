@@ -8,6 +8,7 @@ from typing import Any, Mapping, cast
 import numpy as np
 import pandas as pd
 
+from backtest.utils import strategy as _strat_helpers
 from backtest.utils.alpha import evaluate_pair_cointegration, resolve_half_life_cfg
 from backtest.utils.tz import (
     align_ts_to_index,
@@ -198,6 +199,16 @@ def _build_train_inputs_from_pairs_data(
             pair_half_life = float(cointegration.get("half_life", np.nan))
         except Exception:
             pair_half_life = float("nan")
+        beta_meta = cointegration.get("beta")
+        beta_ok = False
+        try:
+            beta_ok = bool(np.isfinite(float(beta_meta)) and float(beta_meta) > 0.0)
+        except Exception:
+            beta_ok = False
+        if not beta_ok:
+            beta_hat, _ = _strat_helpers.estimate_beta_ols_with_intercept_details(y, x)
+            if beta_hat is None:
+                continue
         out[str(pair)] = {
             "y": y.astype(float),
             "x": x.astype(float),
@@ -309,6 +320,12 @@ def _build_train_inputs(
                     ),
                     "half_life": float(coint_diag.get("half_life", np.nan)),
                 }
+            else:
+                beta_hat, _ = _strat_helpers.estimate_beta_ols_with_intercept_details(
+                    y, x
+                )
+                if beta_hat is None:
+                    continue
             out[str(pair)] = {
                 "y": y.astype(float),
                 "x": x.astype(float),

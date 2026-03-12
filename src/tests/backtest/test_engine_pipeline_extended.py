@@ -74,6 +74,71 @@ def test_backtest_portfolio_exec_rejects_and_risk(
     assert "net_pnl" in trades_out.columns
 
 
+def test_backtest_portfolio_counts_blocked_entries_as_exec_rejects(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    idx = pd.bdate_range("2024-01-02", periods=6)
+    price_data = {
+        "AAA": pd.Series(np.linspace(100.0, 105.0, len(idx)), index=idx),
+        "BBB": pd.Series(np.linspace(50.0, 55.0, len(idx)), index=idx),
+    }
+    trades = pd.DataFrame(
+        {
+            "entry_date": [idx[2], idx[3]],
+            "exit_date": [idx[4], idx[4]],
+            "pair": ["AAA-BBB", "AAA-BBB"],
+            "y_symbol": ["AAA", "AAA"],
+            "x_symbol": ["BBB", "BBB"],
+            "notional_y": [1000.0, 1000.0],
+            "notional_x": [-1000.0, -1000.0],
+            "entry_price_y": [
+                float(price_data["AAA"].iloc[2]),
+                float(price_data["AAA"].iloc[3]),
+            ],
+            "entry_price_x": [
+                float(price_data["BBB"].iloc[2]),
+                float(price_data["BBB"].iloc[3]),
+            ],
+            "signal": [1, -1],
+            "gross_pnl": [10.0, -5.0],
+        }
+    )
+    portfolio = {"AAA-BBB": {"trades": trades}}
+    cfg = {
+        "backtest": {
+            "splits": {
+                "train": {"start": str(idx[0].date()), "end": str(idx[1].date())},
+                "test": {"start": str(idx[2].date()), "end": str(idx[4].date())},
+            },
+        },
+        "execution": {"mode": "lob"},
+        "risk": {"enabled": False},
+        "borrow": {"enabled": False},
+    }
+
+    def fake_annotate(trades_df, *_args, **_kwargs):
+        out = trades_df.copy()
+        out["exec_rejected"] = [False, False]
+        out["exec_reject_reason"] = ["", ""]
+        out["exec_entry_status"] = ["filled", "blocked"]
+        out.loc[out.index[1], "entry_date"] = pd.NaT
+        out.loc[out.index[1], "exit_date"] = pd.NaT
+        return out
+
+    monkeypatch.setattr(engine, "annotate_with_lob", fake_annotate)
+
+    stats, trades_out = engine.backtest_portfolio_with_yaml_cfg(
+        portfolio=portfolio,
+        price_data=price_data,
+        yaml_cfg=cfg,
+        market_data_panel=None,
+        adv_map=None,
+    )
+    assert stats.attrs.get("exec_rejected_count") == 1
+    assert stats.attrs.get("exec_reject_reasons") == {"entry_execution_blocked": 1}
+    assert len(trades_out) == 1
+
+
 def test_normalize_trades_alias_and_exit_infer() -> None:
     df = pd.DataFrame(
         {

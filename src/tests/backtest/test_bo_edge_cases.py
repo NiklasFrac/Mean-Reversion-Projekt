@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pandas as pd
+import pytest
 
 from backtest.optimize.paper_bo_parts import pipeline as pipeline_mod
 from backtest.optimize.paper_bo_parts import sim as sim_mod
@@ -101,7 +102,13 @@ def test_build_train_inputs_uses_runtime_pair_prefilter_cfg(monkeypatch) -> None
         seen["min_obs"] = float(min_obs)
         assert list(df.columns) == ["y", "x"]
         assert isinstance(half_life_cfg, dict)
-        return {"passed": True, "z_window": 7, "max_hold_days": 14, "half_life": 7.0}
+        return {
+            "passed": True,
+            "beta": 1.1,
+            "z_window": 7,
+            "max_hold_days": 14,
+            "half_life": 7.0,
+        }
 
     monkeypatch.setattr(
         pipeline_mod, "evaluate_pair_cointegration", fake_evaluate_pair_cointegration
@@ -113,3 +120,26 @@ def test_build_train_inputs_uses_runtime_pair_prefilter_cfg(monkeypatch) -> None
     assert seen == {"coint_alpha": 1.0, "min_obs": 2.0}
     assert out["AAA-BBB"]["z_window"] == 7
     assert out["AAA-BBB"]["max_hold_days"] == 14
+
+
+def test_build_train_inputs_rejects_non_positive_beta_without_prefilter() -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    prices = pd.DataFrame(
+        {
+            "AAA": [5.0, 4.0, 3.0, 2.0, 1.0],
+            "BBB": [1.0, 2.0, 3.0, 4.0, 5.0],
+        },
+        index=idx,
+    )
+    pairs = {"AAA-BBB": {"t1": "AAA", "t2": "BBB"}}
+    cfg = {
+        "backtest": {
+            "splits": {
+                "train": {"start": str(idx[0].date()), "end": str(idx[-1].date())},
+            }
+        },
+        "pair_prefilter": {"prefilter_active": False},
+    }
+
+    with pytest.raises(ValueError, match="No valid pairs"):
+        pipeline_mod._build_train_inputs(prices=prices, pairs=pairs, cfg=cfg)

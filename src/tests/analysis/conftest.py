@@ -16,7 +16,7 @@ def _utc_dates(n):
 @pytest.fixture
 def synthetic_prices_wide() -> pd.DataFrame:
     """
-    Erzeugt synthetische Preise (wide, N=60 Ticker, T=1200), mit einigen hoch korrelierten Paaren.
+    Generates synthetic prices (wide, N=60 tickers, T=1200), with some highly correlated pairs.
     """
     T, N = 1200, 60
     dates = _utc_dates(T)
@@ -24,8 +24,8 @@ def synthetic_prices_wide() -> pd.DataFrame:
     mu = 0.0002
     sigma = 0.01
     rets = RNG.normal(mu, sigma, size=(T, N))
-    # Injektion korrelierter Faktoren auf Paaren
-    for j in range(0, 10, 2):  # 5 Paare
+    # injection of correlated factors into pairs
+    for j in range(0, 10, 2):  # 5 pairs
         factor = RNG.normal(mu, sigma, size=T)
         rets[:, j] = 0.7 * factor + 0.3 * rets[:, j]
         rets[:, j + 1] = 0.7 * factor + 0.3 * rets[:, j + 1]
@@ -44,7 +44,7 @@ def tmp_prices_file(tmp_path, synthetic_prices_wide) -> Path:
 @pytest.fixture
 def make_prices_file(tmp_path: Path):
     """
-    Speichert ein DataFrame als .pkl und gibt den Pfad zurück.
+    Saves a DataFrame as .pkl and returns the path.
     """
 
     def _writer(df: pd.DataFrame, name: str = "prices.pkl") -> Path:

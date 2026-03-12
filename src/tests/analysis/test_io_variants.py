@@ -36,7 +36,7 @@ def test_load_parquet(tmp_path: Path):
 
 def test_load_feather(tmp_path: Path):
     p = tmp_path / "x.feather"
-    df = _df().reset_index(names=["ts"])  # feather: index als Spalte
+    df = _df().reset_index(names=["ts"])  # feather: index as a column
     df.to_feather(p)
     got = load_filled_data(p)
     assert got.shape[0] == 5 and got.index.tz is not None

@@ -41,7 +41,7 @@ def main() -> int:
             f"taker={taker:3d} ({pct(taker, totals[key]):5.1f}%)"
         )
 
-    # Falls maker_frac-Spalten gepflegt sind, Mittelwerte pruefen.
+    # If maker_frac columns are populated, check their averages.
     try:
         import statistics
 

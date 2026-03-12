@@ -11,21 +11,8 @@ from backtest.simulators.performance import apply_costs, calculate_pair_daily_pn
 from backtest.utils import strategy as _strat_helpers
 
 
-def _estimate_beta_ols(y: pd.Series, x: pd.Series) -> float | None:
-    yy = pd.to_numeric(y, errors="coerce")
-    xx = pd.to_numeric(x, errors="coerce")
-    mask = yy.notna() & xx.notna()
-    if int(mask.sum()) < 2:
-        return None
-    yv = yy.loc[mask].to_numpy(dtype=float, copy=False)
-    xv = xx.loc[mask].to_numpy(dtype=float, copy=False)
-    xm = float(np.mean(xv))
-    ym = float(np.mean(yv))
-    denom = float(np.sum((xv - xm) ** 2))
-    if not np.isfinite(denom) or denom <= 0.0:
-        return None
-    beta = float(np.sum((xv - xm) * (yv - ym)) / denom)
-    return beta if np.isfinite(beta) else None
+def _estimate_beta_ols(y: pd.Series, x: pd.Series) -> tuple[float | None, str | None]:
+    return _strat_helpers.estimate_beta_ols_with_intercept_details(y, x)
 
 
 def _extract_cost_cfg(
@@ -213,23 +200,21 @@ def _precompute_spreads(
     cfg: Mapping[str, Any],
     z_window_for_beta: int,
 ) -> dict[str, pd.Series]:
-    from backtest.utils.alpha import compute_spread_zscore
-
     out: dict[str, pd.Series] = {}
     for pair in sorted((per_pair or {}).keys(), key=str):
         yz = per_pair.get(pair)
         if not isinstance(yz, Mapping):
             continue
-        y = yz["y"]
-        x = yz["x"]
+        yy = pd.Series(pd.to_numeric(yz["y"], errors="coerce"), index=yz["y"].index)
+        xx = pd.Series(pd.to_numeric(yz["x"], errors="coerce"), index=yz["x"].index)
+        idx = yy.index.intersection(xx.index)
+        yy = yy.reindex(idx).ffill().bfill()
+        xx = xx.reindex(idx).ffill().bfill()
+        beta_hat, _ = _estimate_beta_ols(yy, xx)
+        if beta_hat is None:
+            continue
         try:
-            spread, _, _ = compute_spread_zscore(
-                y,
-                x,
-                cfg={
-                    "z_window": int(z_window_for_beta),
-                },
-            )
+            spread = (yy - float(beta_hat) * xx).rename("spread")
             s = (
                 pd.to_numeric(spread, errors="coerce")
                 .replace([np.inf, -np.inf], np.nan)
@@ -375,9 +360,9 @@ def _simulate_stage_pnl_refit(
         train_idx = y_al.index.intersection(train_dates)
         if train_idx.empty:
             continue
-        beta_hat = _estimate_beta_ols(y_al.loc[train_idx], x_al.loc[train_idx])
+        beta_hat, _ = _estimate_beta_ols(y_al.loc[train_idx], x_al.loc[train_idx])
         if beta_hat is None:
-            beta_hat = 1.0
+            continue
 
         spread = (y_al - beta_hat * x_al).rename("spread")
         if eval_dates is not None:

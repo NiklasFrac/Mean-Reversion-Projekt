@@ -11,8 +11,9 @@ from backtest.utils.run.data import (
     _pair_prefilter_inputs,
     _prepare_pairs_data,
 )
+from backtest.utils.portfolio import _df_trades_to_orders_df
 from backtest.utils.run.strategy import _build_strategy, _validate_cfg_strict
-from backtest.utils.run.trades import _collect_portfolio_trades
+from backtest.utils.run.trades import _collect_portfolio_intents, _collect_portfolio_trades
 from backtest.simulators.engine import backtest_portfolio_with_yaml_cfg
 
 
@@ -137,6 +138,8 @@ def prepare_window_portfolio(
     strat = _build_strategy(cfg_eff, borrow_ctx=borrow_ctx_local)
     portfolio = strat(pairs_data_local)
     raw_trades = _collect_portfolio_trades(portfolio)
+    if raw_trades.empty:
+        raw_trades = _collect_portfolio_intents(portfolio)
     orders = _orders_from_portfolio(portfolio)
 
     return WindowPortfolioArtifacts(
@@ -187,13 +190,19 @@ def execute_window_backtest(
     except Exception:
         pass
 
+    orders = prepared.orders
+    if (not isinstance(orders, pd.DataFrame) or orders.empty) and isinstance(
+        trades, pd.DataFrame
+    ) and not trades.empty:
+        orders = _df_trades_to_orders_df(trades)
+
     return WindowExecutionArtifacts(
         cfg=prepared.cfg,
         borrow_ctx=prepared.borrow_ctx,
         pairs_data=prepared.pairs_data,
         portfolio=prepared.portfolio,
         raw_trades=prepared.raw_trades,
-        orders=prepared.orders,
+        orders=orders,
         stats=stats,
         trades=trades,
     )

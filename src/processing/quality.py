@@ -14,10 +14,10 @@ def build_trading_index(
     end: pd.Timestamp | None = None,
 ) -> pd.DatetimeIndex:
     """
-    Bestimmt das Referenz-Grid:
-      - leader: nimmt die Index-Achse der Spalte mit den meisten Nicht-NaNs
-      - calendar: Boersenkalender (XNYS) via pandas_market_calendars; Fallback auf leader
-      - intersection/union: konservativ/expansiv
+    Determines the reference grid:
+      - leader: takes the index axis of the column with the most non-NaNs
+      - calendar: exchange calendar (XNYS) via pandas_market_calendars; fallback to leader
+      - intersection/union: conservative/expansive
     """
     mode = (mode or "leader").lower()
     if raw.empty:
@@ -62,7 +62,7 @@ def build_trading_index(
 
 
 def _safe_log_series(x: pd.Series) -> pd.Series:
-    """Numerisch robuste Log-Transformation fuer Preise (<=0/inf -> NaN)."""
+    """Numerically robust log transformation for prices (<=0/inf -> NaN)."""
     s = pd.to_numeric(x, errors="coerce").astype("float64")
     mask = (s > 0) & np.isfinite(s.to_numpy())
     return cast(pd.Series, np.log(s.where(mask)))
@@ -75,8 +75,8 @@ def robust_outlier_mask(
     use_log_returns: bool = True,
 ) -> pd.Series:
     """
-    Markiert Return-Ausreisser (True = Ausreisser) auf Basis eines robusten Z-Scores (Median/MAD).
-    Numerisch robust (Log-Returns nur fuer positive Preise).
+    Marks return outliers (True = outlier) based on a robust z-score (Median/MAD).
+    Numerically robust (log-returns only for positive prices).
     """
     s = pd.to_numeric(series, errors="coerce").astype("float64").copy()
     if s.dropna().size < 5:
@@ -103,9 +103,9 @@ def scrub_outliers(
     use_log_returns: bool = True,
 ) -> tuple[pd.Series, int]:
     """
-    Setzt die *Zielwerte* der als Ausreisser erkannten Returns
-    auf NaN (am rechten Rand der Differenz), damit sie spaeter
-    regulaer gefuellt werden.
+    Sets the *target values* of returns detected as outliers
+    to NaN (at the right edge of the difference), so they can
+    be filled normally later.
     """
     mask = robust_outlier_mask(
         series, zscore=zscore, window=window, use_log_returns=use_log_returns
@@ -147,7 +147,7 @@ def quality_gates(
     forbid_nonpositive: bool = True,
 ) -> tuple[bool, dict[str, Any]]:
     """
-    Prueft Datenqualitaet gegen Grenzwerte. Gibt (ok, diagnostics) zurueck.
+    Checks data quality against thresholds. Returns (ok, diagnostics).
     """
     s = pd.to_numeric(series, errors="coerce").astype("float64")
     non_na_pct = float(s.notna().sum()) / float(ref_len) if ref_len > 0 else 0.0

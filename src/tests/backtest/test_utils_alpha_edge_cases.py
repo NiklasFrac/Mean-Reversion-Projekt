@@ -42,7 +42,7 @@ def test_alpha_safe_coint_errors(monkeypatch: pytest.MonkeyPatch) -> None:
     assert alpha.safe_coint(pd.Series([1.0, 2.0]), pd.Series([1.0, 2.0])) is False
 
 
-def test_compute_spread_zscore_fallback_and_ols_error(
+def test_compute_spread_zscore_fallback_for_short_non_positive_and_ols_error(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     y = pd.Series([1.0])
@@ -50,6 +50,11 @@ def test_compute_spread_zscore_fallback_and_ols_error(
     spread, z, beta = alpha.compute_spread_zscore(y, x)
     assert beta.eq(1.0).all()
     assert len(spread) == 1 and len(z) == 1
+
+    y_neg = pd.Series([3.0, 2.0, 1.0])
+    x_neg = pd.Series([1.0, 2.0, 3.0])
+    _spread_neg, _z_neg, beta_neg = alpha.compute_spread_zscore(y_neg, x_neg)
+    assert beta_neg.eq(1.0).all()
 
     def boom(*_args, **_kwargs):
         raise ValueError("boom")
@@ -79,7 +84,7 @@ def test_evaluate_pair_cointegration_derives_half_life_runtime_params(
             pass
 
         def fit(self):
-            return type("Fit", (), {"params": np.array([0.0, 0.0])})()
+            return type("Fit", (), {"params": np.array([0.0, 1.0])})()
 
     monkeypatch.setattr(alpha, "coint", lambda *_args, **_kwargs: (0.0, 0.01, {}))
     monkeypatch.setattr(alpha, "OLS", _FakeOLS)
@@ -101,6 +106,40 @@ def test_evaluate_pair_cointegration_derives_half_life_runtime_params(
     assert out["z_window"] == 10
     assert out["max_hold_days"] == 19
     assert out["half_life"] == pytest.approx(9.551337, rel=1e-5)
+    assert out["beta"] == pytest.approx(1.0)
+
+
+def test_evaluate_pair_cointegration_requires_positive_beta_without_half_life(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    df = pd.DataFrame({"y": [3.0, 2.0, 1.0], "x": [1.0, 2.0, 3.0]})
+
+    class _NegativeOLS:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def fit(self):
+            return type("Fit", (), {"params": np.array([4.0, -1.0])})()
+
+    class _PositiveOLS:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def fit(self):
+            return type("Fit", (), {"params": np.array([0.0, 1.5])})()
+
+    monkeypatch.setattr(alpha, "coint", lambda *_args, **_kwargs: (0.0, 0.01, {}))
+
+    monkeypatch.setattr(alpha, "OLS", _NegativeOLS)
+    out_bad = alpha.evaluate_pair_cointegration(df, coint_alpha=0.05, min_obs=3)
+    assert out_bad["passed"] is False
+    assert out_bad["reject_reason"] == "beta_non_positive"
+
+    monkeypatch.setattr(alpha, "OLS", _PositiveOLS)
+    out_ok = alpha.evaluate_pair_cointegration(df, coint_alpha=0.05, min_obs=3)
+    assert out_ok["passed"] is True
+    assert out_ok["reject_reason"] is None
+    assert out_ok["beta"] == pytest.approx(1.5)
 
 
 def test_evaluate_pair_cointegration_rejects_invalid_half_life_states(
@@ -111,7 +150,7 @@ def test_evaluate_pair_cointegration_rejects_invalid_half_life_states(
             pass
 
         def fit(self):
-            return type("Fit", (), {"params": np.array([0.0, 0.0])})()
+            return type("Fit", (), {"params": np.array([0.0, 1.0])})()
 
     monkeypatch.setattr(alpha, "coint", lambda *_args, **_kwargs: (0.0, 0.01, {}))
     monkeypatch.setattr(alpha, "OLS", _FakeOLS)

@@ -11,7 +11,7 @@ from analysis.pipeline import main
 
 @pytest.mark.unit
 def test_load_config_raises_when_not_found(monkeypatch, tmp_path: Path):
-    # kein BACKTEST_CONFIG, und wir arbeiten in leerem tmp cwd
+    # no BACKTEST_CONFIG, and we work in an empty tmp cwd
     monkeypatch.delenv("BACKTEST_ANALYSIS_CONFIG", raising=False)
     monkeypatch.delenv("BACKTEST_CONFIG", raising=False)
     monkeypatch.delenv("STRAT_CONFIG", raising=False)
@@ -22,7 +22,7 @@ def test_load_config_raises_when_not_found(monkeypatch, tmp_path: Path):
 
 @pytest.mark.integration
 def test_main_quick_smoke_artifacts(tmp_path: Path, monkeypatch):
-    # 1) synthetic Preise schreiben
+    # 1) write synthetic prices
     n = 300
     rng = np.random.default_rng(123)
     e = rng.standard_normal((n, 2))
@@ -71,7 +71,7 @@ def test_main_quick_smoke_artifacts(tmp_path: Path, monkeypatch):
     monkeypatch.delenv("BACKTEST_ANALYSIS_CONFIG", raising=False)
     monkeypatch.setenv("BACKTEST_CONFIG", str(cfg_path))
 
-    # 3) Run (quick) + Artefakte prüfen
+    # 3) Run (quick) + check artifacts
     df_sel = main(cfg_path=None, quick=True, overrides=None)
     assert df_sel is not None
     assert pairs_out.exists()
@@ -79,5 +79,5 @@ def test_main_quick_smoke_artifacts(tmp_path: Path, monkeypatch):
     assert meta_path.exists()
 
     meta = json.loads(meta_path.read_text(encoding="utf-8"))
-    # Minimal-Keys, unabhängig davon ob Selektion leer wäre
+    # minimal keys, regardless of whether selection would be empty
     assert "stats" in meta and "timings" in meta and "timestamp" in meta

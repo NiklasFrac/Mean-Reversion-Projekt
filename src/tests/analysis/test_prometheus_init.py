@@ -8,7 +8,7 @@ def test_init_prometheus_enabled(monkeypatch):
     def fake_server(*a, **k):
         calls["server"] += 1
 
-    # Patch beide möglichen Targets
+    # Patch both possible targets
     if hasattr(da, "start_http_server"):
         monkeypatch.setattr(da, "start_http_server", fake_server, raising=False)
     try:

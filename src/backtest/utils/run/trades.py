@@ -12,6 +12,7 @@ from backtest.utils.reporting import equity_from_stats as _equity_from_stats
 __all__ = [
     "_apply_global_positions_ledger",
     "_collect_portfolio_trades",
+    "_collect_portfolio_intents",
     "_equity_from_stats",
     "_portfolio_from_trades",
     "_write_pnl_concentration_report",
@@ -126,6 +127,19 @@ def _collect_portfolio_trades(portfolio: Mapping[str, Any] | None) -> pd.DataFra
         trades = meta.get("trades")
         if isinstance(trades, pd.DataFrame) and not trades.empty:
             frames.append(trades)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _collect_portfolio_intents(portfolio: Mapping[str, Any] | None) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for _, meta in (portfolio or {}).items():
+        if not isinstance(meta, Mapping):
+            continue
+        intents = meta.get("intents")
+        if isinstance(intents, pd.DataFrame) and not intents.empty:
+            frames.append(intents.copy())
     if not frames:
         return pd.DataFrame()
     return pd.concat(frames, ignore_index=True, sort=False)

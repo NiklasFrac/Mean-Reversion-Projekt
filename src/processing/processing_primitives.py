@@ -47,8 +47,8 @@ def detect_stale(
     min_run: int = 2,
 ) -> bool:
     """
-    "Stale" nur, wenn k aufeinanderfolgende flache Schritte (|dP|<eps)
-    mindestens 'min_run' mal hintereinander auftreten; optional mit Volumenkriterium.
+    Treat data as "stale" only when k consecutive flat steps (|dP|<eps)
+    occur at least "min_run" times in a row; optionally with a volume criterion.
     """
     s = pd.to_numeric(series, errors="coerce").astype(float)
     if s.dropna().size < (k + 1):

@@ -182,7 +182,7 @@ def setup_prometheus(cfg: dict[str, Any]) -> None:
         _PROM_ENABLED = True
         logger.info("Prometheus gestartet auf Port %d", port)
     except Exception as e:
-        logger.warning("Prometheus Start fehlgeschlagen: %s", e)
+        logger.warning("Failed to start Prometheus: %s", e)
 
 
 def prom_set_total(n: int) -> None:

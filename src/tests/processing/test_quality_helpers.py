@@ -15,12 +15,12 @@ from processing.timebase import ensure_utc_index, pick_time_grid
 def test_ensure_utc_index_duplicates_median():
     ts = [
         datetime(2020, 1, 1, tzinfo=UTC),
-        datetime(2020, 1, 1, tzinfo=UTC),  # Duplikat
+        datetime(2020, 1, 1, tzinfo=UTC),  # duplicate
         datetime(2020, 1, 2, tzinfo=UTC),
     ]
     df = pd.DataFrame({"A": [1.0, 3.0, 2.0]}, index=ts)
     out = ensure_utc_index(df)
-    # Duplikat aggregiert via Median => (1,3) -> 2 an 2020-01-01
+    # duplicate timestamps are aggregated via median => (1,3) -> 2 on 2020-01-01
     assert list(out.index.astype("datetime64[ns]")) == list(
         pd.to_datetime(["2020-01-01", "2020-01-02"])
     )
@@ -80,7 +80,7 @@ def test_safe_log_series_and_df_shapes():
 def test_robust_outlier_mask_and_quality_gates():
     idx = pd.date_range("2020-01-01", periods=30, freq="B")
     s = pd.Series(np.linspace(100, 110, len(idx)), index=idx)
-    s.iloc[15] = 1000.0  # Ausreißer
+    s.iloc[15] = 1000.0  # outlier
     mask = robust_outlier_mask_causal(s, zscore=6.0, window=11, use_log_returns=True)
     assert mask.sum() >= 1
     ok, diag = quality_gates(s, ref_len=len(idx), non_na_min_pct=0.9, max_gap=3)

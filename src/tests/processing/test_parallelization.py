@@ -9,8 +9,8 @@ from processing.processing_primitives import process_and_fill_prices
 
 def test_process_and_fill_prices_parallel_equals_sequential(tmp_path):
     """
-    Prüft, dass n_jobs>1 denselben Output liefert wie n_jobs=1.
-    (Kleine Datenmenge -> sollte flott sein.)
+    Checks that n_jobs>1 produces the same output as n_jobs=1.
+    (Small dataset -> should be quick.)
     """
     idx = pd.date_range("2020-01-01", periods=20, tz="UTC")
     prices = pd.DataFrame(

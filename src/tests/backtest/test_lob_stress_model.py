@@ -4,6 +4,7 @@ import pandas as pd
 import pytest
 
 from backtest.config.cfg import make_config_from_yaml
+from backtest.simulators import lob
 from backtest.simulators.liquidity_model import LiquidityModel, LiquidityModelCfg
 
 
@@ -97,3 +98,15 @@ def test_override_pnl_is_rejected() -> None:
     }
     with pytest.raises(ValueError, match="override_pnl"):
         make_config_from_yaml(yaml_cfg)
+
+
+def test_exit_stress_ladders_are_monotone() -> None:
+    assert lob._effective_exit_grace_days(2, "normal") == 2
+    assert lob._effective_exit_grace_days(2, "elevated") == 2
+    assert lob._effective_exit_grace_days(2, "stress") == 1
+    assert lob._effective_exit_grace_days(2, "panic") == 0
+
+    assert lob._panic_cross_bps_for_regime(50.0, "normal") == pytest.approx(50.0)
+    assert lob._panic_cross_bps_for_regime(50.0, "elevated") == pytest.approx(75.0)
+    assert lob._panic_cross_bps_for_regime(50.0, "stress") == pytest.approx(125.0)
+    assert lob._panic_cross_bps_for_regime(50.0, "panic") == pytest.approx(250.0)

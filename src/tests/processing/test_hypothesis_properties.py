@@ -73,10 +73,10 @@ def test_safe_log_properties_series(xs):
     )
 )
 def test_safe_log_properties_frame(xss):
-    df = pd.DataFrame(xss, dtype="float64").T  # Spalten = Series
+    df = pd.DataFrame(xss, dtype="float64").T  # columns = series
     out = safe_log(df)
     assert isinstance(out, pd.DataFrame) and out.shape == df.shape
-    # Alle positiven & endlichen Einträge bleiben endlich
+    # all positive and finite entries remain finite
     mask = (df > 0) & np.isfinite(df.to_numpy())
     finite_after = np.isfinite(out.to_numpy()[mask.to_numpy()])
     assert finite_after.all() if finite_after.size else True

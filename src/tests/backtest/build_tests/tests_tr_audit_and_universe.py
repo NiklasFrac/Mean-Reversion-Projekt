@@ -30,7 +30,7 @@ def test_universe_interval_masks_prices(tmp_path: Path):
     # AAA erst ab 2020-01-02
     assert np.isnan(masked.loc[pd.Timestamp("2020-01-01"), "AAA"])
     assert masked.loc[pd.Timestamp("2020-01-02"), "AAA"] == 2.0
-    # BBB nur bis inkl. 2020-01-03
+    # BBB only through 2020-01-03 inclusive
     assert masked.loc[pd.Timestamp("2020-01-03"), "BBB"] == 12.0
     assert np.isnan(masked.loc[pd.Timestamp("2020-01-06"), "BBB"])
 
@@ -85,11 +85,11 @@ def test_universe_interval_masks_lowercase_price_columns(tmp_path: Path):
 
 def test_tr_audit_flags_continuity_failure(tmp_path: Path):
     dates = pd.date_range("2020-02-03", periods=6, freq="B")
-    # raw: großer Sprung am 5.2. -> simuliertes Split-Event
+    # raw: large jump on 2020-02-05 -> simulated split event
     raw = pd.DataFrame(
         {"AAA": [100, 102, 104, 210, 212, 214]}, index=dates, dtype=float
     )
-    # adjusted falsch (keine Korrektur durchgeführt) => Audit soll Continuity-Fail melden
+    # adjusted is wrong (no correction applied) => audit should report continuity failure
     adj = raw.copy()
 
     splits = pd.DataFrame(
