@@ -626,11 +626,7 @@ def main(
                 "significance_mode": (
                     f"fdr_{fdr_method.lower()}"
                     if enable_hypothesis_test and enable_fdr
-                    else (
-                        "pvalue"
-                        if enable_hypothesis_test
-                        else "disabled"
-                    )
+                    else ("pvalue" if enable_hypothesis_test else "disabled")
                 ),
             },
             "inputs": [
@@ -905,8 +901,7 @@ def main(
                 significance_mode = f"fdr_{fdr_method.lower()}"
             else:
                 decisions = [
-                    bool(np.isfinite(p)) and float(p) <= float(fdr_alpha)
-                    for p in pvals
+                    bool(np.isfinite(p)) and float(p) <= float(fdr_alpha) for p in pvals
                 ]
                 significance_mode = "pvalue"
         else:
@@ -1009,19 +1004,19 @@ def main(
             "ci_level": ci_level,
         },
         "data_analysis": {
-                "use_multiprocessing": use_mp_flag,
-                "mp_start_method": start_method,
-                "effective_workers": eff_workers,
-                "n_jobs": n_jobs,
-                "max_candidates": max_candidates,
-                "max_candidates_disabled": max_candidates_disabled,
-                "persist_intermediates": persist_intermediates,
-                "enable_bootstrap": enable_bootstrap,
-                "enable_hypothesis_test": enable_hypothesis_test,
-                "enable_fdr": enable_fdr,
-                "fdr_method": fdr_method if enable_fdr else None,
-                "significance_mode": significance_mode,
-            },
+            "use_multiprocessing": use_mp_flag,
+            "mp_start_method": start_method,
+            "effective_workers": eff_workers,
+            "n_jobs": n_jobs,
+            "max_candidates": max_candidates,
+            "max_candidates_disabled": max_candidates_disabled,
+            "persist_intermediates": persist_intermediates,
+            "enable_bootstrap": enable_bootstrap,
+            "enable_hypothesis_test": enable_hypothesis_test,
+            "enable_fdr": enable_fdr,
+            "fdr_method": fdr_method if enable_fdr else None,
+            "significance_mode": significance_mode,
+        },
         "inputs": [
             {
                 "prices_path": str(filled_path),
