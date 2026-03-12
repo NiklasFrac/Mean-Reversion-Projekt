@@ -1,21 +1,21 @@
 # Mean-Reversion-Projekt
 
-This repository contains a reproducible Python research pipeline for US equity pairs trading. It covers universe construction, causal data processing, pair-selection research, and downstream backtesting, with emphasis on provenance, split-consistent evaluation, and explicit implementation assumptions.
+A reproducible Python research pipeline for **US equity pairs trading**, built around **causal preprocessing**, **statistically disciplined pair selection**, and **walk-forward evaluation**.
 
-The project is designed as a quantitative research and engineering pipeline rather than a production trading system. Its purpose is to support disciplined empirical investigation under public-data constraints, while keeping upstream data construction, pair selection, and downstream evaluation clearly separated.
+The repository is designed as a **quantitative research and engineering project**, not as a production trading system. Its purpose is to support transparent empirical investigation under **public-data constraints**, while keeping universe construction, preprocessing, statistical analysis, and downstream evaluation clearly separated.
 
-## What this repository demonstrates
+## Highlights
 
-- multi-stage quantitative research pipeline design
-- causal preprocessing of public equity data into execution-ready panels
-- statistically disciplined pair-selection research
-- walk-forward backtesting with explicit execution assumptions
-- reproducibility through configuration-driven runs, manifests, and stage handoff
-- code quality controls via tests, linting, and stage-specific type checking
+- **Four-stage research pipeline:** `universe -> processing -> analysis -> backtest`
+- **Causal preprocessing** of public equity data into execution-ready panels
+- **Statistically disciplined pair selection** with rolling diagnostics, bootstrap-based evaluation, and FDR-controlled testing
+- **Walk-forward backtesting** under explicit execution, borrow, and portfolio-level assumptions
+- **Reproducibility** through configuration-driven runs, manifests, pinned dependencies, and stage handoff
+- **Engineering quality controls** via tests, linting, formatting, CI, and stage-specific type checking
 
 ## Research Scope
 
-The repository studies a constrained US equity statistical-arbitrage setting using public daily data. The focus is not on maximizing headline backtest metrics, but on building a transparent research stack in which universe construction, processing, analysis, and evaluation remain modular, auditable, and reproducible.
+This repository studies a constrained **US equity statistical-arbitrage** setting using **public daily data**. The focus is not on maximizing headline backtest metrics, but on building a **transparent, modular, and auditable research stack** in which upstream data construction, downstream evaluation, and implementation assumptions remain explicit.
 
 ## Pipeline Overview
 
@@ -24,9 +24,9 @@ Universe -> Processing -> Analysis -> Backtest
 ```
 
 - **Universe** builds the candidate equity universe and upstream artefacts with provenance.
-- **Processing** turns upstream artefacts into cleaned, execution-ready panels, diagnostics, and ADV outputs.
-- **Analysis** runs pair-selection research, rolling diagnostics, and bootstrap/FDR evaluation.
-- **Backtest** evaluates strategy behavior, execution assumptions, and walk-forward performance from upstream artefacts.
+- **Processing** transforms upstream artefacts into cleaned, execution-ready panels, diagnostics, and ADV outputs.
+- **Analysis** runs pair-selection research, rolling diagnostics, and bootstrap/FDR-based statistical evaluation.
+- **Backtest** evaluates strategy behaviour, execution assumptions, and walk-forward performance using upstream artefacts.
 
 ## Methodological Safeguards
 
@@ -46,23 +46,23 @@ Universe -> Processing -> Analysis -> Backtest
 - `src/tests/` - stage-specific test suites
 - `runs/configs/` - canonical runtime configurations
 
-## Output Layout
+## Further Documentation
 
-- `runs/data/` stores mutable upstream and intermediate artefacts from Universe, Processing, and Analysis.
-- `runs/results/` stores generated Backtest, calibration, Bayesian optimization, and reporting outputs.
-- Runtime outputs are generally not versioned unless explicitly committed for audit or review.
-
-## License
-
-The code in this repository is licensed under the MIT License. Data files and
-other third-party artefacts may be subject to separate upstream terms and are
-not covered by the MIT License unless explicitly stated.
+- **Universe:** `src/universe/README.md`
+- **Processing:** `src/processing/README.md`
+- **Analysis:** `src/analysis/README.md`
+- **Backtest:** `src/backtest/README.md`
 
 ## Prerequisites
 
 - Python `3.12` (`>=3.12,<3.14`)
-- `uv` installed, for example via `python -m pip install --upgrade uv`
-- run commands from the repository root
+- `uv` installed, for example via:
+
+```bash
+python -m pip install --upgrade uv
+```
+
+- Run commands from the repository root
 
 ## Installation
 
@@ -98,27 +98,31 @@ uv sync --extra analysis --extra backtest --extra processing
 
 ## Quick Start
 
-Recommended order: `universe -> processing -> analysis -> backtest`.
+Recommended stage order:
 
-Universe:
+```text
+universe -> processing -> analysis -> backtest
+```
+
+### Universe
 
 ```bash
 uv run python -m universe.runner_universe --cfg runs/configs/config_universe.yaml
 ```
 
-Processing:
+### Processing
 
 ```bash
 uv run python -m processing.runner_processing --cfg runs/configs/config_processing.yaml
 ```
 
-Analysis:
+### Analysis
 
 ```bash
 uv run --extra analysis python -m analysis.runner_analysis --cfg runs/configs/config_analysis.yaml
 ```
 
-Backtest:
+### Backtest
 
 ```bash
 uv run --extra backtest python -m backtest.runner_backtest --cfg runs/configs/config_backtest.yaml
@@ -126,14 +130,14 @@ uv run --extra backtest python -m backtest.runner_backtest --cfg runs/configs/co
 
 ## Stage Handoff
 
-The pipeline is designed so that each stage consumes explicit upstream artefacts rather than recomputing the full stack implicitly.
+The pipeline is designed so that each stage consumes **explicit upstream artefacts** rather than recomputing the full stack implicitly.
 
 - **Universe** produces upstream market artefacts, manifests, and symbol-level inputs.
 - **Processing** consumes universe artefacts and emits cleaned execution-side panels, diagnostics, and ADV artefacts.
 - **Analysis** consumes processed outputs and writes pair candidates, rolling diagnostics, statistical evaluation, and provenance metadata.
 - **Backtest** consumes processed prices plus analysis outputs and writes downstream performance and research outputs.
 
-For audit or reproducibility work, prefer immutable run-scoped artefacts when available.
+For audit or reproducibility work, prefer **immutable run-scoped artefacts** when available.
 
 ## Quality Gates (Local)
 
@@ -175,7 +179,7 @@ uv run --extra backtest mypy --config-file mypy_backtest.ini
 uv run --extra backtest pytest -q src/tests/backtest
 ```
 
-Pre-commit / pre-push:
+### Pre-commit / pre-push
 
 ```bash
 uv run pre-commit install --hook-type pre-commit --hook-type pre-push
@@ -184,10 +188,10 @@ uv run pre-commit run --all-files --hook-stage pre-push
 
 ## CI Overview
 
-- `universe-ci`: Ruff, format check, Mypy, and Universe tests
-- `processing-ci`: `core` / `optional` matrix, optional-processing import coverage, Ruff, Mypy, and Processing tests
-- `analysis-ci`: frozen `uv` install with `analysis` extra, dependency import smoke check, Ruff, Mypy, and Analysis tests
-- `backtest-ci`: frozen `uv` install with `backtest` extra, dependency import smoke check, Ruff, Mypy, and Backtest tests
+- **universe-ci**: Ruff, format check, Mypy, and Universe tests
+- **processing-ci**: core / optional matrix, optional-processing import coverage, Ruff, Mypy, and Processing tests
+- **analysis-ci**: frozen `uv` install with analysis extra, dependency import smoke check, Ruff, Mypy, and Analysis tests
+- **backtest-ci**: frozen `uv` install with backtest extra, dependency import smoke check, Ruff, Mypy, and Backtest tests
 
 ## Reproducibility
 
@@ -205,9 +209,6 @@ uv run pre-commit run --all-files --hook-stage pre-push
 - downstream conclusions depend on upstream data quality, filtering choices, and implementation assumptions
 - performance outputs should be interpreted in the context of the stated research design
 
-## Further Documentation
+## License
 
-- Analysis: `src/analysis/README.md`
-- Universe: `src/universe/README.md`
-- Processing: `src/processing/README.md`
-- Backtest: `src/backtest/README.md`
+The code in this repository is licensed under the **MIT License**. Data files and other third-party artefacts may be subject to separate upstream terms and are not covered by the MIT License unless explicitly stated.
