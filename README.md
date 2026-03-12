@@ -1,39 +1,56 @@
 # Mean-Reversion-Projekt
 
-This repository contains a reproducible quantitative research pipeline with
-four operational stages:
+This repository contains a reproducible Python research pipeline for US equity pairs trading. It covers universe construction, causal data processing, pair-selection research, and downstream backtesting, with emphasis on provenance, split-consistent evaluation, and explicit implementation assumptions.
 
-- `universe`: builds the investable universe and upstream artefacts with provenance
-- `processing`: turns upstream artefacts into execution-ready panels, diagnostics, and ADV outputs
-- `analysis`: runs pair-selection research, rolling metrics, and bootstrap/FDR evaluation
-- `backtest`: evaluates strategy behavior, execution assumptions, and walk-forward performance from analysis outputs
+The project is designed as a quantitative research and engineering pipeline rather than a production trading system. Its purpose is to support disciplined empirical investigation under public-data constraints, while keeping upstream data construction, pair selection, and downstream evaluation clearly separated.
+
+## What this repository demonstrates
+
+- multi-stage quantitative research pipeline design
+- causal preprocessing of public equity data into execution-ready panels
+- statistically disciplined pair-selection research
+- walk-forward backtesting with explicit execution assumptions
+- reproducibility through configuration-driven runs, manifests, and stage handoff
+- code quality controls via tests, linting, and stage-specific type checking
+
+## Research Scope
+
+The repository studies a constrained US equity statistical-arbitrage setting using public daily data. The focus is not on maximizing headline backtest metrics, but on building a transparent research stack in which universe construction, processing, analysis, and evaluation remain modular, auditable, and reproducible.
+
+## Pipeline Overview
+
+```text
+Universe -> Processing -> Analysis -> Backtest
+```
+
+- **Universe** builds the candidate equity universe and upstream artefacts with provenance.
+- **Processing** turns upstream artefacts into cleaned, execution-ready panels, diagnostics, and ADV outputs.
+- **Analysis** runs pair-selection research, rolling diagnostics, and bootstrap/FDR evaluation.
+- **Backtest** evaluates strategy behavior, execution assumptions, and walk-forward performance from upstream artefacts.
+
+## Methodological Safeguards
+
+- train-only estimation and split-consistent downstream evaluation
+- explicit separation between upstream artefact generation and downstream consumption
+- configuration-driven entry points for all operational stages
+- reproducibility through manifests, pinned dependencies, and canonical runtime configs
+- stage-specific quality gates covering linting, formatting, typing, and tests
+- explicit treatment of execution-related assumptions in downstream evaluation
+
+## Repository Structure
+
+- `src/universe/` - universe build, vendor downloads, manifests, and raw upstream outputs
+- `src/processing/` - input resolution, cleaning/filling, diagnostics, and ADV generation
+- `src/analysis/` - pair-selection analysis, rolling metrics, bootstrap/FDR, and provenance
+- `src/backtest/` - downstream evaluation and strategy research
+- `src/tests/` - stage-specific test suites
+- `runs/configs/` - canonical runtime configurations
 
 ## Prerequisites
 
 - Python `3.12` (`>=3.12,<3.14`)
 - `uv` installed, for example via `python -m pip install --upgrade uv`
-- Run commands from the repository root
-
-## Project Structure
-
-- `src/universe/` - universe build, vendor downloads, manifests, and raw outputs
-- `src/processing/` - input resolution, cleaning/filling, diagnostics, and ADV generation
-- `src/analysis/` - pair-selection analysis, rolling metrics, bootstrap/FDR, and provenance
-- `src/backtest/` - downstream evaluation and strategy research
-- `src/tests/universe/` - universe test suite
-- `src/tests/processing/` - processing test suite
-- `src/tests/analysis/` - analysis test suite
-- `src/tests/backtest/` - backtest test suite
-- `runs/configs/` - runtime configurations
-- `runs/data/` - generated mutable "latest" outputs and run-scoped artefacts
-
-## Stage Handoff
-
-- `universe` writes raw prices, raw volume, manifests, and optional immutable per-run outputs under `runs/data/by_run/...`
-- `processing` consumes universe artefacts and emits processed execution outputs, diagnostics, and ADV artefacts
-- `analysis` consumes processed outputs and writes pair candidates, rolling diagnostics, bootstrap/FDR statistics, and provenance metadata
-- `backtest` consumes processed prices plus analysis outputs and writes run-scoped reports under `runs/results/performance/BT-*` and BO diagnostics under `runs/results/bo/*` when enabled
-- For audit, paper, or reproducibility work, prefer immutable run-scoped artefacts under `runs/data/by_run/...` when available
+- run commands from the repository root
 
 ## Installation
 
@@ -55,22 +72,21 @@ Backtest runtime dependencies:
 uv sync --extra backtest
 ```
 
-Optional processing features (for example calendars and MLflow):
+Optional processing features:
 
 ```bash
 uv sync --extra processing
 ```
 
-Full local environment for the full four-stage research stack:
+Full local environment for the complete four-stage research stack:
 
 ```bash
 uv sync --extra analysis --extra backtest --extra processing
 ```
 
-## Run Pipelines
+## Quick Start
 
 Recommended order: `universe -> processing -> analysis -> backtest`.
-The default entry-point configs live under `runs/configs/`.
 
 Universe:
 
@@ -96,12 +112,22 @@ Backtest:
 uv run --extra backtest python -m backtest.runner_backtest --cfg runs/configs/config_backtest.yaml
 ```
 
+## Stage Handoff
+
+The pipeline is designed so that each stage consumes explicit upstream artefacts rather than recomputing the full stack implicitly.
+
+- **Universe** produces upstream market artefacts, manifests, and symbol-level inputs.
+- **Processing** consumes universe artefacts and emits cleaned execution-side panels, diagnostics, and ADV artefacts.
+- **Analysis** consumes processed outputs and writes pair candidates, rolling diagnostics, statistical evaluation, and provenance metadata.
+- **Backtest** consumes processed prices plus analysis outputs and writes downstream performance and research outputs.
+
+For audit or reproducibility work, prefer immutable run-scoped artefacts when available.
+
 ## Quality Gates (Local)
 
-The `mypy` profiles are stage-specific and target the production source
-packages; stage tests are validated through `pytest`.
+The `mypy` profiles are stage-specific and target the production source packages; stage tests are validated through `pytest`.
 
-Universe:
+### Universe
 
 ```bash
 uv run ruff check src/universe src/tests/universe
@@ -110,7 +136,7 @@ uv run mypy --config-file mypy_universe.ini
 uv run pytest -q src/tests/universe
 ```
 
-Processing:
+### Processing
 
 ```bash
 uv run ruff check src/processing src/tests/processing
@@ -119,7 +145,7 @@ uv run mypy --config-file mypy_processing.ini
 uv run pytest -q src/tests/processing
 ```
 
-Analysis:
+### Analysis
 
 ```bash
 uv run ruff check src/analysis src/tests/analysis
@@ -128,7 +154,7 @@ uv run --extra analysis mypy --config-file mypy_analysis.ini
 uv run --extra analysis pytest -q src/tests/analysis
 ```
 
-Backtest:
+### Backtest
 
 ```bash
 uv run ruff check src/backtest src/tests/backtest
@@ -151,14 +177,21 @@ uv run pre-commit run --all-files --hook-stage pre-push
 - `analysis-ci`: frozen `uv` install with `analysis` extra, dependency import smoke check, Ruff, Mypy, and Analysis tests
 - `backtest-ci`: frozen `uv` install with `backtest` extra, dependency import smoke check, Ruff, Mypy, and Backtest tests
 
-## Reproducibility Files
+## Reproducibility
 
-- `pyproject.toml`: Python version, package discovery, extras, and repo-wide `pytest`/`ruff`/`uv` defaults.
-- `uv.lock`: frozen dependency set for deterministic local and CI installs via `uv sync --frozen`.
-- `.pre-commit-config.yaml`: local `ruff`/`mypy`/`pytest` hooks for all four stages.
-- `mypy_*.ini`: stage-specific type-check profiles used locally and in CI.
-- `runs/configs/*.yaml`: canonical stage entry-point configs, including `runs/configs/config_backtest.yaml`.
-- `.github/workflows/*.yml`: CI source of truth mirroring the local quality gates.
+- `pyproject.toml` defines Python version bounds, package discovery, extras, and repo-wide tooling defaults
+- `uv.lock` pins the dependency set for deterministic local and CI installs
+- `.pre-commit-config.yaml` defines local quality hooks
+- `mypy_*.ini` provides stage-specific typing profiles
+- `runs/configs/*.yaml` contains canonical stage entry-point configurations
+- `.github/workflows/*.yml` mirrors the local quality gates in CI
+
+## Limitations
+
+- the repository uses public daily data and therefore operates under data-vendor and frequency constraints
+- it is a research pipeline, not a live execution system
+- downstream conclusions depend on upstream data quality, filtering choices, and implementation assumptions
+- performance outputs should be interpreted in the context of the stated research design
 
 ## Further Documentation
 
