@@ -1,0 +1,101 @@
+minimum_pre_commit_version: "3.7.0"
+
+repos:
+  - repo: local
+    hooks:
+      - id: ruff-format-universe
+        name: ruff format (universe)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/universe/|src/tests/universe/)
+      - id: ruff-check-universe
+        name: ruff check (universe)
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/universe/|src/tests/universe/)
+      - id: ruff-format-processing
+        name: ruff format (processing)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/processing/|src/tests/processing/)
+      - id: ruff-check-processing
+        name: ruff check (processing)
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/processing/|src/tests/processing/)
+      - id: ruff-format-analysis
+        name: ruff format (analysis)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/analysis/|src/tests/analysis/)
+      - id: ruff-check-analysis
+        name: ruff check (analysis)
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/analysis/|src/tests/analysis/)
+      - id: ruff-format-backtest
+        name: ruff format (backtest)
+        entry: uv run ruff format
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/backtest/|src/tests/backtest/)
+      - id: ruff-check-backtest
+        name: ruff check (backtest)
+        entry: uv run ruff check
+        language: system
+        types_or: [python, pyi]
+        files: ^(src/backtest/|src/tests/backtest/)
+      - id: mypy-universe
+        name: mypy (universe profile)
+        entry: uv run mypy --config-file mypy_universe.ini
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mypy-processing
+        name: mypy (processing profile)
+        entry: uv run mypy --config-file mypy_processing.ini
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mypy-analysis
+        name: mypy (analysis profile)
+        entry: uv run --extra analysis mypy --config-file mypy_analysis.ini
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: mypy-backtest
+        name: mypy (backtest profile)
+        entry: uv run --extra backtest mypy --config-file mypy_backtest.ini
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-universe
+        name: pytest (universe)
+        entry: uv run pytest -q src/tests/universe
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-processing
+        name: pytest (processing)
+        entry: uv run pytest -q src/tests/processing
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-analysis
+        name: pytest (analysis)
+        entry: uv run --extra analysis pytest -q src/tests/analysis
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
+      - id: pytest-backtest
+        name: pytest (backtest)
+        entry: uv run --extra backtest pytest -q src/tests/backtest
+        language: system
+        pass_filenames: false
+        stages: [pre-push]
