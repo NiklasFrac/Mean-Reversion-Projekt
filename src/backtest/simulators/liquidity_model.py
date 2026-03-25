@@ -17,8 +17,8 @@ from typing import Any, Mapping, cast
 import numpy as np
 import pandas as pd
 
-from backtest.simulators.common import price_at_or_prior
-from backtest.utils.tz import NY_TZ, align_ts_to_index, coerce_ts_to_tz
+from backtest.utils.prices import price_at_or_prior
+from backtest.utils.tz import align_ts_to_index, to_ny_timestamp
 
 __all__ = ["LiquidityModel", "LiquidityModelCfg"]
 
@@ -65,12 +65,6 @@ def _infer_panel_field_level(cols: pd.MultiIndex) -> int:
             best_hits = hits
             best_level = lvl
     return int(best_level)
-
-
-def _to_ny_ts(ts: pd.Timestamp, *, tz: str = NY_TZ) -> pd.Timestamp:
-    return coerce_ts_to_tz(ts, tz)
-
-
 @dataclass(frozen=True)
 class LiquidityModelCfg:
     enabled: bool = True
@@ -446,7 +440,7 @@ class LiquidityModel:
 
     def stress_state(self, symbol: str, ts: pd.Timestamp) -> dict[str, Any]:
         sym = str(symbol).strip().upper()
-        t = _to_ny_ts(pd.Timestamp(ts))
+        t = to_ny_timestamp(pd.Timestamp(ts))
         if not self.cfg.stress_enabled:
             mods = self._stress_modifiers("normal")
             return {
@@ -549,7 +543,7 @@ class LiquidityModel:
         Uses only information at-or-prior to `ts` (rolling windows are past-only).
         """
         sym = str(symbol).strip().upper()
-        t = _to_ny_ts(pd.Timestamp(ts))
+        t = to_ny_timestamp(pd.Timestamp(ts))
 
         levels = _safe_int(base.get("levels", 5), 5)
         steps_per_day = _safe_int(base.get("steps_per_day", 4), 4)

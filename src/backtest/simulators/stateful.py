@@ -8,8 +8,8 @@ import numpy as np
 import pandas as pd
 
 from backtest.borrow.accrual import compute_borrow_daily_costs_for_trade_row
-from backtest.calendars import apply_settlement_lag
-from backtest.risk_policy import (
+from backtest.runner.calendars import apply_settlement_lag
+from backtest.risk.policy import (
     build_risk_policy,
     cap_units_by_participation,
     cap_units_by_trade_notional,

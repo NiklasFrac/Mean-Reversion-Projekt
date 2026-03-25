@@ -1,4 +1,4 @@
-from .config.cfg import BacktestConfig, make_config_from_yaml
+from .config.cfg import AppConfig, config_to_dict, load_config, parse_config
 from .config.types import (
     BorrowCtx,
     Fill,
@@ -7,8 +7,10 @@ from .config.types import (
 )
 
 __all__ = [
-    "BacktestConfig",
-    "make_config_from_yaml",
+    "AppConfig",
+    "config_to_dict",
+    "load_config",
+    "parse_config",
     "BorrowCtx",
     "Fill",
     "PricingCfg",

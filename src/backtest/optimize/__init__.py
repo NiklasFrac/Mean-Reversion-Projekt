@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from importlib import import_module
-from typing import Any
+from .cpcv import CPCV, CPCVSplits, cpcv_splits, cpcv_splits_from_boundaries
+from .optimizer import run_bo_conservative
+from .runner import BORunResult, run_bo_if_enabled
 
 __all__ = [
-    "paper_bo",
-    "cpcv",
+    "BORunResult",
+    "CPCV",
+    "CPCVSplits",
+    "cpcv_splits",
+    "cpcv_splits_from_boundaries",
+    "run_bo_conservative",
+    "run_bo_if_enabled",
 ]
-
-
-def __getattr__(name: str) -> Any:
-    if name in __all__:
-        return import_module(f"{__name__}.{name}")
-    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

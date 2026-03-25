@@ -6,6 +6,8 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from backtest.config.types import MarkovFilterConfig
+
 _STATE_LABELS = (
     "extreme_negative",
     "inner_negative",
@@ -15,13 +17,12 @@ _STATE_LABELS = (
 )
 _N_STATES = len(_STATE_LABELS)
 _NEUTRAL_STATE = 2
+_MARKOV_FILTER_DEFAULTS = MarkovFilterConfig()
 
 
 @dataclass(frozen=True)
 class MarkovFilterOutput:
     entry_gate: pd.Series
-    hit_prob: pd.Series
-    states: pd.Series
     diagnostics: dict[str, Any]
 
 
@@ -47,29 +48,55 @@ def _to_int(value: Any, default: int, *, minimum: int) -> int:
     return max(int(minimum), int(out))
 
 
+def _empty_entry_gate(z: pd.Series) -> pd.Series:
+    idx = pd.DatetimeIndex(z.index)
+    return pd.Series(True, index=idx, dtype=bool, name="markov_entry_gate")
+
+
+def _diagnostics_base(
+    *,
+    enabled: bool,
+    active: bool,
+    reason: str,
+    params: Mapping[str, Any],
+    extra: Mapping[str, Any] | None = None,
+) -> dict[str, Any]:
+    diagnostics: dict[str, Any] = {
+        "enabled": bool(enabled),
+        "active": bool(active),
+        "reason": str(reason),
+        "state_labels": list(_STATE_LABELS),
+        "horizon_days": int(params["horizon_days"]),
+        "min_revert_prob": float(params["min_revert_prob"]),
+        "min_train_observations": int(params["min_train_observations"]),
+        "min_state_observations": int(params["min_state_observations"]),
+        "transition_smoothing": float(params["transition_smoothing"]),
+        "neutral_z": float(params["neutral_z"]),
+        "entry_z": float(params["entry_z"]),
+    }
+    if extra:
+        diagnostics.update(dict(extra))
+    return diagnostics
+
+
 def _default_output(
     z: pd.Series,
     *,
     enabled: bool,
     reason: str,
+    params: Mapping[str, Any],
     diagnostics_extra: Mapping[str, Any] | None = None,
 ) -> MarkovFilterOutput:
-    idx = pd.DatetimeIndex(z.index)
-    entry_gate = pd.Series(True, index=idx, dtype=bool, name="markov_entry_gate")
-    hit_prob = pd.Series(np.nan, index=idx, dtype=float, name="markov_hit_prob")
-    states = pd.Series(pd.NA, index=idx, dtype="Int64", name="markov_state")
-    diagnostics: dict[str, Any] = {
-        "enabled": bool(enabled),
-        "active": False,
-        "reason": str(reason),
-        "state_labels": list(_STATE_LABELS),
-    }
-    if diagnostics_extra:
-        diagnostics.update(dict(diagnostics_extra))
+    entry_gate = _empty_entry_gate(z)
+    diagnostics = _diagnostics_base(
+        enabled=enabled,
+        active=False,
+        reason=reason,
+        params=params,
+        extra=diagnostics_extra,
+    )
     return MarkovFilterOutput(
         entry_gate=entry_gate,
-        hit_prob=hit_prob,
-        states=states,
         diagnostics=diagnostics,
     )
 
@@ -87,18 +114,37 @@ def _resolve_cfg(
     )
     enabled = bool(raw.get("enabled", False))
     horizon_days = _to_int(
-        raw.get("horizon_days", raw.get("horizon", 10)), 10, minimum=1
+        raw.get("horizon_days", _MARKOV_FILTER_DEFAULTS.horizon_days),
+        _MARKOV_FILTER_DEFAULTS.horizon_days,
+        minimum=1,
     )
     min_revert_prob = _to_float(
-        raw.get("min_revert_prob", raw.get("threshold", 0.5)), 0.5
+        raw.get("min_revert_prob", _MARKOV_FILTER_DEFAULTS.min_revert_prob),
+        _MARKOV_FILTER_DEFAULTS.min_revert_prob,
     )
     min_revert_prob = float(min(max(min_revert_prob, 0.0), 1.0))
     min_train_observations = _to_int(
-        raw.get("min_train_observations", 30), 30, minimum=2
+        raw.get(
+            "min_train_observations", _MARKOV_FILTER_DEFAULTS.min_train_observations
+        ),
+        _MARKOV_FILTER_DEFAULTS.min_train_observations,
+        minimum=2,
     )
-    min_state_observations = _to_int(raw.get("min_state_observations", 5), 5, minimum=1)
+    min_state_observations = _to_int(
+        raw.get(
+            "min_state_observations", _MARKOV_FILTER_DEFAULTS.min_state_observations
+        ),
+        _MARKOV_FILTER_DEFAULTS.min_state_observations,
+        minimum=1,
+    )
     transition_smoothing = max(
-        0.0, _to_float(raw.get("transition_smoothing", 0.0), 0.0)
+        0.0,
+        _to_float(
+            raw.get(
+                "transition_smoothing", _MARKOV_FILTER_DEFAULTS.transition_smoothing
+            ),
+            _MARKOV_FILTER_DEFAULTS.transition_smoothing,
+        ),
     )
     neutral_z = abs(_to_float(raw.get("neutral_z", exit_z), exit_z))
     extreme_z = abs(_to_float(raw.get("entry_z", entry_z), entry_z))
@@ -114,7 +160,7 @@ def _resolve_cfg(
     }
 
 
-def discretize_z_to_states(
+def _discretize_z_to_states(
     z: pd.Series,
     *,
     neutral_z: float,
@@ -194,21 +240,12 @@ def build_markov_entry_filter(
 ) -> MarkovFilterOutput:
     params = _resolve_cfg(cfg, entry_z=entry_z, exit_z=exit_z)
     enabled = bool(params["enabled"])
-    diagnostics_base = {
-        "horizon_days": int(params["horizon_days"]),
-        "min_revert_prob": float(params["min_revert_prob"]),
-        "min_train_observations": int(params["min_train_observations"]),
-        "min_state_observations": int(params["min_state_observations"]),
-        "transition_smoothing": float(params["transition_smoothing"]),
-        "neutral_z": float(params["neutral_z"]),
-        "entry_z": float(params["entry_z"]),
-    }
     if not enabled:
         return _default_output(
             z,
             enabled=False,
             reason="disabled",
-            diagnostics_extra=diagnostics_base,
+            params=params,
         )
 
     neutral_z = float(params["neutral_z"])
@@ -223,10 +260,10 @@ def build_markov_entry_filter(
             z,
             enabled=True,
             reason="invalid_state_thresholds",
-            diagnostics_extra=diagnostics_base,
+            params=params,
         )
 
-    states = discretize_z_to_states(z, neutral_z=neutral_z, entry_z=extreme_z)
+    states = _discretize_z_to_states(z, neutral_z=neutral_z, entry_z=extreme_z)
     train_states = states.reindex(pd.DatetimeIndex(train_index))
     valid_train = train_states.dropna()
     if int(len(valid_train)) < int(params["min_train_observations"]):
@@ -234,8 +271,8 @@ def build_markov_entry_filter(
             z,
             enabled=True,
             reason="insufficient_train_observations",
+            params=params,
             diagnostics_extra={
-                **diagnostics_base,
                 "n_train_observations": int(len(valid_train)),
             },
         )
@@ -248,9 +285,7 @@ def build_markov_entry_filter(
         probs, horizon_days=int(params["horizon_days"])
     )
 
-    idx = pd.DatetimeIndex(z.index)
-    entry_gate = pd.Series(True, index=idx, dtype=bool, name="markov_entry_gate")
-    hit_prob = pd.Series(np.nan, index=idx, dtype=float, name="markov_hit_prob")
+    entry_gate = _empty_entry_gate(z)
     eval_idx = pd.DatetimeIndex(eval_index)
     eval_states = states.reindex(eval_idx)
     min_state_observations = int(params["min_state_observations"])
@@ -259,8 +294,6 @@ def build_markov_entry_filter(
             continue
         state = int(raw_state)
         state_prob = float(hit_prob_by_state[state])
-        if np.isfinite(state_prob):
-            hit_prob.at[ts] = state_prob
         enough_support = (
             int(visits[state]) >= min_state_observations and int(outgoing[state]) > 0
         )
@@ -268,38 +301,31 @@ def build_markov_entry_filter(
             entry_gate.at[ts] = bool(state_prob >= float(params["min_revert_prob"]))
 
     blocked_eval_days = int((~entry_gate.reindex(eval_idx).fillna(True)).sum())
-    diagnostics: dict[str, Any] = {
-        "enabled": True,
-        "active": True,
-        "reason": "ok",
-        "state_labels": list(_STATE_LABELS),
-        "horizon_days": int(params["horizon_days"]),
-        "min_revert_prob": float(params["min_revert_prob"]),
-        "min_train_observations": int(params["min_train_observations"]),
-        "min_state_observations": int(params["min_state_observations"]),
-        "transition_smoothing": float(params["transition_smoothing"]),
-        "neutral_z": float(neutral_z),
-        "entry_z": float(extreme_z),
-        "n_train_observations": int(len(valid_train)),
-        "blocked_eval_days": int(blocked_eval_days),
-        "state_visit_counts": {
-            label: int(visits[i]) for i, label in enumerate(_STATE_LABELS)
+    diagnostics = _diagnostics_base(
+        enabled=True,
+        active=True,
+        reason="ok",
+        params=params,
+        extra={
+            "n_train_observations": int(len(valid_train)),
+            "blocked_eval_days": int(blocked_eval_days),
+            "state_visit_counts": {
+                label: int(visits[i]) for i, label in enumerate(_STATE_LABELS)
+            },
+            "state_outgoing_counts": {
+                label: int(outgoing[i]) for i, label in enumerate(_STATE_LABELS)
+            },
+            "hit_prob_by_state": {
+                label: (
+                    float(hit_prob_by_state[i])
+                    if np.isfinite(hit_prob_by_state[i])
+                    else None
+                )
+                for i, label in enumerate(_STATE_LABELS)
+            },
         },
-        "state_outgoing_counts": {
-            label: int(outgoing[i]) for i, label in enumerate(_STATE_LABELS)
-        },
-        "hit_prob_by_state": {
-            label: (
-                float(hit_prob_by_state[i])
-                if np.isfinite(hit_prob_by_state[i])
-                else None
-            )
-            for i, label in enumerate(_STATE_LABELS)
-        },
-    }
+    )
     return MarkovFilterOutput(
         entry_gate=entry_gate,
-        hit_prob=hit_prob,
-        states=states,
         diagnostics=diagnostics,
     )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, cast
 
@@ -9,46 +8,9 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 
+from backtest.config.types import ReportingConfig
 from backtest.reporting.tearsheet import summarize_stats, write_tearsheet
-
-
-@dataclass(frozen=True)
-class ReportingConfig:
-    mode: str = "core"
-    train_visuals: tuple[str, ...] = ("cv_scores", "equity")
-    test_tearsheet_enabled: bool = True
-    test_tearsheet_dpi: int = 150
-
-    @property
-    def debug_enabled(self) -> bool:
-        return self.mode == "debug"
-
-
-def load_reporting_config(cfg: Mapping[str, Any]) -> ReportingConfig:
-    if "reports" in cfg:
-        raise ValueError(
-            "Legacy config key 'reports' is no longer supported. Use 'reporting'."
-        )
-    block = cfg.get("reporting", {})
-    rep = dict(block) if isinstance(block, Mapping) else {}
-    mode = str(rep.get("mode", "core")).strip().lower()
-    if mode not in {"core", "debug"}:
-        mode = "core"
-    visuals_raw = rep.get("train_visuals")
-    visuals: tuple[str, ...]
-    if isinstance(visuals_raw, (list, tuple)):
-        items = [str(v).strip().lower() for v in visuals_raw if str(v).strip()]
-        visuals = tuple(items) if items else ("cv_scores", "equity")
-    else:
-        visuals = ("cv_scores", "equity")
-    ts = rep.get("test_tearsheet", {})
-    ts_cfg = dict(ts) if isinstance(ts, Mapping) else {}
-    return ReportingConfig(
-        mode=mode,
-        train_visuals=visuals,
-        test_tearsheet_enabled=bool(ts_cfg.get("enabled", True)),
-        test_tearsheet_dpi=int(ts_cfg.get("dpi", 150)),
-    )
+from backtest.utils.io import write_json
 
 
 def report_dir(out_dir: Path) -> Path:
@@ -57,14 +19,6 @@ def report_dir(out_dir: Path) -> Path:
 
 def debug_dir(out_dir: Path) -> Path:
     return Path(out_dir) / "debug"
-
-
-def _json_dump(path: Path, payload: Any) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False, default=str),
-        encoding="utf-8",
-    )
 
 
 def _summary_payload(
@@ -165,7 +119,7 @@ def _write_test_summary(
             }
         )
         wdf.to_csv(report_root / "test_window_summary.csv", index=False)
-    _json_dump(report_root / "test_summary.json", payload)
+    write_json(report_root / "test_summary.json", payload)
     return payload
 
 
@@ -176,14 +130,14 @@ def _write_test_tearsheet(
     trades_df: pd.DataFrame,
     cfg: ReportingConfig,
 ) -> None:
-    if not cfg.test_tearsheet_enabled:
+    if not cfg.test_tearsheet.enabled:
         return
     write_tearsheet(
         eq,
         stats_df=None,
         out_dir=report_root / "test_tearsheet",
         trades_df=trades_df,
-        dpi=cfg.test_tearsheet_dpi,
+        dpi=cfg.test_tearsheet.dpi,
     )
 
 
@@ -431,6 +385,338 @@ def _write_train_refit_plot(
     plt.close(fig)
 
 
+def _gini_from_abs(values: pd.Series) -> float:
+    arr = pd.to_numeric(values, errors="coerce").abs().dropna().to_numpy(dtype=float)
+    if arr.size == 0 or np.all(arr == 0.0):
+        return 0.0
+    arr = np.sort(arr)
+    n = arr.size
+    cum = np.cumsum(arr)
+    gini = (n + 1 - 2 * (cum / cum[-1]).sum()) / n
+    return float(max(0.0, min(1.0, gini)))
+
+
+def _collect_train_trades(refits: list[Mapping[str, Any]]) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for item in refits:
+        trades = _refit_value(item, "trades")
+        if isinstance(trades, pd.DataFrame) and not trades.empty:
+            frames.append(trades.copy())
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True, sort=False)
+
+
+def _write_train_pair_concentration_csv(
+    report_root: Path,
+    *,
+    refits: list[Mapping[str, Any]],
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    cols = ["pair", "net_pnl", "abs_net_pnl", "share_abs", "n_trades"]
+    trades = _collect_train_trades(refits)
+    if (
+        trades.empty
+        or "pair" not in trades.columns
+        or "net_pnl" not in trades.columns
+    ):
+        empty = pd.DataFrame(columns=cols)
+        empty.to_csv(report_root / "train_pair_concentration.csv", index=False)
+        payload = {
+            "available": False,
+            "n_pairs": 0,
+            "n_trades": 0,
+            "top5_abs_share": None,
+            "gini_abs": None,
+        }
+        write_json(report_root / "train_pair_concentration.json", payload)
+        return empty, payload
+
+    df = trades.copy()
+    df["net_pnl"] = pd.to_numeric(df["net_pnl"], errors="coerce")
+    df = df.dropna(subset=["net_pnl"])
+    grouped = (
+        df.groupby("pair", dropna=False)
+        .agg(net_pnl=("net_pnl", "sum"), n_trades=("net_pnl", "size"))
+        .reset_index()
+    )
+    if grouped.empty:
+        empty = pd.DataFrame(columns=cols)
+        empty.to_csv(report_root / "train_pair_concentration.csv", index=False)
+        payload = {
+            "available": False,
+            "n_pairs": 0,
+            "n_trades": int(len(df)),
+            "top5_abs_share": None,
+            "gini_abs": None,
+        }
+        write_json(report_root / "train_pair_concentration.json", payload)
+        return empty, payload
+
+    grouped["abs_net_pnl"] = grouped["net_pnl"].abs()
+    abs_total = float(grouped["abs_net_pnl"].sum())
+    grouped["share_abs"] = (
+        grouped["abs_net_pnl"] / abs_total if abs_total > 0.0 else 0.0
+    )
+    grouped = grouped.sort_values(
+        ["abs_net_pnl", "net_pnl"], ascending=[False, False]
+    ).reset_index(drop=True)
+    grouped = grouped.loc[:, cols]
+    grouped.to_csv(report_root / "train_pair_concentration.csv", index=False)
+
+    payload = {
+        "available": True,
+        "n_pairs": int(len(grouped)),
+        "n_trades": int(len(df)),
+        "top5_abs_share": (
+            float(grouped["share_abs"].head(5).sum()) if abs_total > 0.0 else 0.0
+        ),
+        "gini_abs": _gini_from_abs(grouped["net_pnl"]),
+        "top_pairs": grouped.head(10).to_dict(orient="records"),
+    }
+    write_json(report_root / "train_pair_concentration.json", payload)
+    return grouped, payload
+
+
+def _write_train_pair_concentration_plot(
+    report_root: Path,
+    *,
+    concentration_df: pd.DataFrame,
+    summary: Mapping[str, Any],
+    dpi: int,
+) -> None:
+    path = report_root / "train_pair_concentration.png"
+    if concentration_df.empty:
+        _write_placeholder_plot(
+            path,
+            title="Train Pair Concentration",
+            body="Train pair concentration not available",
+            dpi=dpi,
+        )
+        return
+
+    plot_df = concentration_df.head(10).copy().iloc[::-1]
+    plot_df["net_pnl"] = pd.to_numeric(plot_df["net_pnl"], errors="coerce").fillna(0.0)
+    colors = np.where(plot_df["net_pnl"] >= 0.0, "tab:green", "tab:red")
+
+    fig, ax = plt.subplots(figsize=(11, 5))
+    ax.barh(plot_df["pair"].astype(str), plot_df["net_pnl"], color=colors, alpha=0.85)
+    ax.axvline(0.0, color="0.25", linewidth=1.0)
+    ax.set_title("Train Pair PnL Concentration")
+    ax.set_xlabel("Net PnL")
+    ax.set_ylabel("Pair")
+    ax.grid(True, axis="x", alpha=0.25)
+
+    txt = (
+        f"pairs={int(summary.get('n_pairs', 0))}   "
+        f"trades={int(summary.get('n_trades', 0))}   "
+        f"top5 abs share={float(summary.get('top5_abs_share', 0.0)):.1%}   "
+        f"gini(abs)={float(summary.get('gini_abs', 0.0)):.2f}"
+    )
+    fig.text(0.01, 0.01, txt, ha="left", va="bottom", fontsize=9)
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+
+
+def _score_col_from_trials(df: pd.DataFrame) -> str | None:
+    for col in ("score", "oos_score", "sharpe"):
+        if col in df.columns:
+            return col
+    return None
+
+
+def _write_train_param_stability_csv(
+    report_root: Path,
+    *,
+    bo_trials: pd.DataFrame | None,
+) -> pd.DataFrame:
+    cols = [
+        "wf_i",
+        "component",
+        "model_id",
+        "score",
+        "entry_z",
+        "exit_z",
+        "stop_z",
+        "min_revert_prob",
+        "horizon_days",
+    ]
+    if bo_trials is None or bo_trials.empty:
+        empty = pd.DataFrame(columns=cols)
+        empty.to_csv(report_root / "train_param_stability.csv", index=False)
+        return empty
+
+    df = bo_trials.copy()
+    if "fold_id" in df.columns:
+        fold_num = pd.to_numeric(df["fold_id"], errors="coerce")
+        if fold_num.isna().any():
+            df = df.loc[fold_num.isna()].copy()
+    score_col = _score_col_from_trials(df)
+    if score_col is None or "params_json" not in df.columns:
+        empty = pd.DataFrame(columns=cols)
+        empty.to_csv(report_root / "train_param_stability.csv", index=False)
+        return empty
+
+    rows: list[dict[str, Any]] = []
+    for _, row in df.iterrows():
+        params_raw = row.get("params_json")
+        try:
+            params = json.loads(str(params_raw))
+        except Exception:
+            continue
+        if not isinstance(params, Mapping):
+            continue
+        score = _cast_number(row.get(score_col))
+        if score is None:
+            continue
+        rows.append(
+            {
+                "wf_i": _cast_number(row.get("wf_i")),
+                "component": str(row.get("component", "")),
+                "model_id": str(row.get("model_id", "")),
+                "score": float(score),
+                "entry_z": _cast_number(params.get("entry_z")),
+                "exit_z": _cast_number(params.get("exit_z")),
+                "stop_z": _cast_number(params.get("stop_z")),
+                "min_revert_prob": _cast_number(params.get("min_revert_prob")),
+                "horizon_days": _cast_number(params.get("horizon_days")),
+            }
+        )
+    out = pd.DataFrame(rows, columns=cols)
+    out.to_csv(report_root / "train_param_stability.csv", index=False)
+    return out
+
+
+def _plot_param_surface_signal(ax: plt.Axes, df: pd.DataFrame) -> None:
+    plot_df = df.dropna(subset=["entry_z", "exit_z", "score"]).copy()
+    if plot_df.empty:
+        ax.axis("off")
+        ax.set_title("Signal Surface")
+        ax.text(0.5, 0.5, "Signal BO not available", ha="center", va="center")
+        return
+    stop = pd.to_numeric(plot_df["stop_z"], errors="coerce").fillna(
+        pd.to_numeric(plot_df["stop_z"], errors="coerce").median()
+    )
+    stop_min = float(stop.min()) if not stop.empty else 1.0
+    stop_span = float(stop.max() - stop.min()) if not stop.empty else 0.0
+    sizes = 60.0 + 120.0 * ((stop - stop_min) / stop_span) if stop_span > 0 else 90.0
+    sc = ax.scatter(
+        plot_df["entry_z"],
+        plot_df["exit_z"],
+        c=plot_df["score"],
+        s=sizes,
+        cmap="viridis",
+        alpha=0.8,
+        edgecolors="black",
+        linewidths=0.3,
+    )
+    best = plot_df.loc[plot_df["score"].idxmax()]
+    ax.scatter(
+        [best["entry_z"]],
+        [best["exit_z"]],
+        marker="*",
+        s=220,
+        c="gold",
+        edgecolors="black",
+        linewidths=0.8,
+    )
+    ax.set_title("Signal Surface")
+    ax.set_xlabel("entry_z")
+    ax.set_ylabel("exit_z")
+    ax.grid(True, alpha=0.25)
+    cb = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label("score")
+
+
+def _plot_param_surface_markov(ax: plt.Axes, df: pd.DataFrame) -> None:
+    plot_df = df.dropna(subset=["min_revert_prob", "horizon_days", "score"]).copy()
+    if plot_df.empty:
+        ax.axis("off")
+        ax.set_title("Markov Surface")
+        ax.text(0.5, 0.5, "Markov BO not available", ha="center", va="center")
+        return
+    sc = ax.scatter(
+        plot_df["min_revert_prob"],
+        plot_df["horizon_days"],
+        c=plot_df["score"],
+        s=95,
+        cmap="plasma",
+        alpha=0.8,
+        edgecolors="black",
+        linewidths=0.3,
+    )
+    best = plot_df.loc[plot_df["score"].idxmax()]
+    ax.scatter(
+        [best["min_revert_prob"]],
+        [best["horizon_days"]],
+        marker="*",
+        s=220,
+        c="gold",
+        edgecolors="black",
+        linewidths=0.8,
+    )
+    ax.set_title("Markov Surface")
+    ax.set_xlabel("min_revert_prob")
+    ax.set_ylabel("horizon_days")
+    ax.grid(True, alpha=0.25)
+    cb = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+    cb.set_label("score")
+
+
+def _write_train_param_stability_plot(
+    report_root: Path,
+    *,
+    stability_df: pd.DataFrame,
+    dpi: int,
+) -> None:
+    path = report_root / "train_param_stability.png"
+    if stability_df.empty:
+        _write_placeholder_plot(
+            path,
+            title="Train Parameter Stability",
+            body="BO parameter stability not available",
+            dpi=dpi,
+        )
+        return
+
+    signal_df = stability_df.loc[stability_df["component"] == "theta_sig"].copy()
+    markov_df = stability_df.loc[stability_df["component"] == "theta_markov"].copy()
+    n_panels = int(bool(not signal_df.empty)) + int(bool(not markov_df.empty))
+    if n_panels == 0:
+        _write_placeholder_plot(
+            path,
+            title="Train Parameter Stability",
+            body="BO parameter stability not available",
+            dpi=dpi,
+        )
+        return
+
+    plt.style.use("default")
+    fig, axes = plt.subplots(1, n_panels, figsize=(7 * n_panels, 5))
+    axes_arr = np.atleast_1d(axes)
+    pos = 0
+    if not signal_df.empty:
+        _plot_param_surface_signal(axes_arr[pos], signal_df)
+        pos += 1
+    if not markov_df.empty:
+        _plot_param_surface_markov(axes_arr[pos], markov_df)
+    wf_count = int(
+        pd.to_numeric(stability_df["wf_i"], errors="coerce").dropna().nunique()
+    )
+    fig.suptitle("Train Parameter Stability", y=1.02)
+    fig.text(
+        0.01,
+        0.01,
+        f"candidates={int(len(stability_df))}   windows={wf_count if wf_count > 0 else 1}",
+        ha="left",
+        va="bottom",
+        fontsize=9,
+    )
+    fig.tight_layout(rect=(0, 0.04, 1, 0.98))
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+
+
 def _write_train_selection_summary(
     report_root: Path,
     *,
@@ -477,7 +763,7 @@ def _write_train_selection_summary(
             "num_trades": refit_summary.get("num_trades"),
         },
     }
-    _json_dump(report_root / "train_selection_summary.json", payload)
+    write_json(report_root / "train_selection_summary.json", payload)
     return payload
 
 
@@ -489,6 +775,7 @@ def write_core_report(
     test_trades: pd.DataFrame,
     train_refits: list[Mapping[str, Any]],
     cv_scores: pd.DataFrame | None = None,
+    bo_trials: pd.DataFrame | None = None,
     window_rows: pd.DataFrame | None = None,
 ) -> dict[str, Any]:
     report_root = report_dir(out_dir)
@@ -513,11 +800,28 @@ def write_core_report(
 
     cv_df = _write_train_cv_csv(report_root, cv_scores)
     _write_train_cv_plot(
-        report_root, cv_scores=cv_df, dpi=reporting_cfg.test_tearsheet_dpi
+        report_root, cv_scores=cv_df, dpi=reporting_cfg.test_tearsheet.dpi
     )
     train_equity_df = _write_train_refit_equity_csv(report_root, refits=train_refits)
     _write_train_refit_plot(
-        report_root, equity_df=train_equity_df, dpi=reporting_cfg.test_tearsheet_dpi
+        report_root, equity_df=train_equity_df, dpi=reporting_cfg.test_tearsheet.dpi
+    )
+    train_pair_df, train_pair_summary = _write_train_pair_concentration_csv(
+        report_root, refits=train_refits
+    )
+    _write_train_pair_concentration_plot(
+        report_root,
+        concentration_df=train_pair_df,
+        summary=train_pair_summary,
+        dpi=reporting_cfg.test_tearsheet.dpi,
+    )
+    train_stability_df = _write_train_param_stability_csv(
+        report_root, bo_trials=bo_trials
+    )
+    _write_train_param_stability_plot(
+        report_root,
+        stability_df=train_stability_df,
+        dpi=reporting_cfg.test_tearsheet.dpi,
     )
     train_summary = _write_train_selection_summary(
         report_root, refits=train_refits, cv_scores=cv_df

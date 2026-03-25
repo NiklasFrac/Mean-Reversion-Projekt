@@ -7,12 +7,10 @@ import numpy as np
 import pandas as pd
 
 from backtest.borrow.accrual import compute_borrow_cost_for_trade_row
-from backtest.utils.common.prices import price_at_or_prior as _price_at_or_prior
+from backtest.utils.prices import price_at_or_prior as _price_at_or_prior
 from backtest.config.types import BorrowCtx
-from backtest.utils.be import _infer_exit_column
-from backtest.utils.tz import coerce_series_to_tz, to_naive_day
-
-from . import engine_state as _state
+from backtest.simulators.helpers import _infer_exit_column
+from backtest.utils.tz import to_naive_day, to_ny_series
 
 logger = logging.getLogger("backtest")
 
@@ -212,7 +210,7 @@ def _normalize_trades(pair: str, trades: Any) -> pd.DataFrame | None:
     for c in ("entry_date", "exit_date"):
         if c in df.columns:
             s = pd.to_datetime(df[c], errors="coerce")
-            s = coerce_series_to_tz(s, _state._EX_TZ, naive_is_utc=_state._NAIVE_IS_UTC)
+            s = to_ny_series(s)
             df[c] = s
 
     if "entry_date" in df.columns and "exit_date" in df.columns:

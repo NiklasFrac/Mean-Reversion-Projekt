@@ -9,8 +9,6 @@ from typing import Iterable, Iterator, List, Sequence, Tuple, overload
 import numpy as np
 from numpy.typing import NDArray
 
-from backtest.optimize import cv_blocks as _cvb
-
 __all__ = [
     "CPCVSplits",
     "CPCV",
@@ -50,17 +48,25 @@ def _validate_params(
 
 
 def _compute_block_boundaries(n_samples: int, n_blocks: int) -> Array1D:
-    """
-    Return a 'boundaries' array of length n_blocks+1 with cumulative edges.
-    Blocks are consecutive and as evenly sized as possible; any remainder is
-    assigned to the first blocks.
-    """
-    return _cvb._compute_block_boundaries(n_samples, n_blocks)
+    base = n_samples // n_blocks
+    rem = n_samples % n_blocks
+    sizes = np.full(n_blocks, base, dtype=np.int64)
+    if rem:
+        sizes[:rem] += 1
+    boundaries = np.empty(n_blocks + 1, dtype=np.int64)
+    boundaries[0] = 0
+    np.cumsum(sizes, out=boundaries[1:])
+    return boundaries
 
 
 def _embargo_len(embargo: int | float, block_len: int) -> int:
-    """Compute embargo length in samples for this side of a block."""
-    return _cvb._embargo_len(embargo, block_len)
+    if embargo <= 0:
+        return 0
+    if isinstance(embargo, float) and float(embargo).is_integer():
+        return int(embargo)
+    if isinstance(embargo, float):
+        return int(np.ceil(float(embargo) * float(block_len)))
+    return int(embargo)
 
 
 def _concat_blocks(boundaries: Array1D, block_ids: Sequence[int]) -> Array1D:
@@ -84,14 +90,30 @@ def _train_indices_with_purge_embargo(
     purge: int,
     embargo: int | float,
 ) -> Array1D:
-    """
-    Build train indices as the complement of test blocks and trim side-selectively.
-    If the left neighbor is a test block, trim left by purge + embargo.
-    If the right neighbor is a test block, trim right by purge + embargo.
-    """
-    return _cvb._train_indices_with_purge_embargo(
-        boundaries, test_blocks, purge, embargo
-    )
+    n_blocks = len(boundaries) - 1
+    test_set = set(int(b) for b in test_blocks)
+    parts: List[Array1D] = []
+
+    for b in range(n_blocks):
+        if b in test_set:
+            continue
+        left = int(boundaries[b])
+        right = int(boundaries[b + 1])
+        blen = right - left
+        if blen <= 0:
+            continue
+
+        emb = _embargo_len(embargo, blen)
+        if (b - 1) in test_set:
+            left = max(left, int(boundaries[b]) + int(purge) + int(emb))
+        if (b + 1) in test_set:
+            right = min(right, int(boundaries[b + 1]) - int(purge) - int(emb))
+        if right > left:
+            parts.append(np.arange(left, right, dtype=np.int64))
+
+    if not parts:
+        return np.empty(0, dtype=np.int64)
+    return np.concatenate(parts, dtype=np.int64)
 
 
 def num_cpcv_splits(n_blocks: int, k_test_blocks: int) -> int:

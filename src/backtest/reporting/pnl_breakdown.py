@@ -7,38 +7,20 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple, cast
 import numpy as np
 import pandas as pd
 
-from backtest.utils.io import _safe_write_df
-from backtest.utils.metrics import (
+from backtest.reporting.metrics import (
     _percentiles,
     arrival_shortfall_bps,
     decision_shortfall_bps,
     markouts_1_5_30m_bps,
 )
+from backtest.utils.io import safe_write_df
 from backtest.utils.tz import (
     NY_TZ,
-    coerce_series_to_tz,
-    ensure_dtindex_tz,
-    get_ex_tz,
-    get_naive_is_utc,
+    align_index_to_index,
     to_naive_day,
+    to_ny_index,
+    to_ny_series,
 )
-
-# ------------------------------------------------------------
-# TZ policy (defaults -> America/New_York; naive interpreted as UTC)
-# ------------------------------------------------------------
-_EX_TZ: str = get_ex_tz({}, None, default=NY_TZ)
-_NAIVE_IS_UTC: bool = get_naive_is_utc()
-
-
-def _to_ex_tz_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
-    if not isinstance(idx, pd.DatetimeIndex):
-        idx = pd.to_datetime(idx, errors="coerce")
-    return ensure_dtindex_tz(pd.DatetimeIndex(idx), _EX_TZ, naive_is_utc=_NAIVE_IS_UTC)
-
-
-def _to_ex_tz_series(s: pd.Series) -> pd.Series:
-    # SSOT: timezone parsing/localization strategy lives in utils.tz.
-    return coerce_series_to_tz(s, _EX_TZ, naive_is_utc=_NAIVE_IS_UTC, utc_hint="auto")
 
 
 def _normalize_to_settle_date(ts_like: pd.Series | pd.DatetimeIndex) -> pd.Series:
@@ -46,10 +28,10 @@ def _normalize_to_settle_date(ts_like: pd.Series | pd.DatetimeIndex) -> pd.Serie
     Convert to exchange tz, normalize to day, drop tz (naive midnight) for stable daily buckets.
     """
     if isinstance(ts_like, pd.Series):
-        idx = _to_ex_tz_series(ts_like)
+        idx = to_ny_series(ts_like)
         return to_naive_day(idx)
     # DatetimeIndex
-    di = _to_ex_tz_index(pd.DatetimeIndex(ts_like))
+    di = to_ny_index(pd.DatetimeIndex(ts_like))
     return pd.Series(to_naive_day(di), index=getattr(ts_like, "index", None))
 
 
@@ -108,11 +90,11 @@ def _to_ts_index(df: pd.DataFrame, ts_col: Optional[str]) -> pd.DataFrame:
     """
     if isinstance(df.index, pd.DatetimeIndex):
         out = df.copy()
-        out.index = _to_ex_tz_index(cast(pd.DatetimeIndex, out.index))
+        out.index = to_ny_index(cast(pd.DatetimeIndex, out.index))
         return out
     if ts_col and ts_col in df.columns:
         out = df.copy()
-        out[ts_col] = _to_ex_tz_series(out[ts_col])
+        out[ts_col] = to_ny_series(out[ts_col])
         out = out.set_index(ts_col)
         return out
     return df
@@ -172,15 +154,10 @@ def _add_tca_columns(
         aligned = _to_ts_index(out, ts_col)
         if isinstance(aligned.index, pd.DatetimeIndex):
             # Convert event_times to exchange tz first, then match mid tz (if any)
-            evt_idx = _to_ex_tz_index(aligned.index)
+            evt_idx = to_ny_index(aligned.index)
             mid_idx = mid.index if isinstance(mid.index, pd.DatetimeIndex) else None
-            mid_tz = getattr(getattr(mid_idx, "tz", None), "zone", None) or getattr(
-                mid_idx, "tz", None
-            )
-            if mid_tz is not None and mid_idx is not None:
-                evt_idx = ensure_dtindex_tz(
-                    evt_idx, str(mid_idx.tz)
-                )  # align tz with mid
+            if mid_idx is not None:
+                evt_idx = align_index_to_index(evt_idx, mid_idx)
             mo = markouts_1_5_30m_bps(
                 side=side, event_times=evt_idx, mid=mid, how="ffill"
             )
@@ -396,8 +373,8 @@ def _agg_tca_quantiles(
 
 
 def _write_dual(out_path_noext: Path, df: pd.DataFrame) -> None:
-    _safe_write_df(out_path_noext.with_suffix(".parquet"), df)
-    _safe_write_df(out_path_noext.with_suffix(".csv"), df)
+    safe_write_df(out_path_noext.with_suffix(".parquet"), df)
+    safe_write_df(out_path_noext.with_suffix(".csv"), df)
 
 
 # ------------------------------------------------------------
@@ -432,7 +409,7 @@ def generate_pnl_breakdown(
     trade_paths = sorted(glob.glob(str(out / "trades_te_*.csv"))) + sorted(
         glob.glob(str(out / "wf" / "trades_te_*.csv"))
     )
-    # Fallback: single-file runner output (runner_backtest writes `trades.csv` at the run root).
+    # Fallback: single-file runner output (`backtest.runner` writes `trades.csv` at the run root).
     if not trade_paths:
         for p in (out / "trades.csv", out.parent / "trades.csv"):
             if p.exists():

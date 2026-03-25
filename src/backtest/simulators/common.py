@@ -7,9 +7,8 @@ from typing import Literal
 import numpy as np
 import pandas as pd
 
-from backtest.utils.common.prices import price_at_or_prior as _price_at_or_prior
+from backtest.simulators.helpers import _safe_float
 from ..config.types import PricingCfg, Side
-from ..utils.be import _safe_float
 
 
 def pick_reference_price(
@@ -139,12 +138,6 @@ def infer_side(row: pd.Series, leg: str, *, default: SideTxt = "buy") -> SideTxt
 
 def opposite_side(side: SideTxt) -> SideTxt:
     return "buy" if side == "sell" else "sell"
-
-
-def price_at_or_prior(
-    series: pd.Series | None, ts: pd.Timestamp, *, allow_zero: bool = False
-) -> float | None:
-    return _price_at_or_prior(series, ts, allow_zero=allow_zero)
 
 
 def limit_from_bps(

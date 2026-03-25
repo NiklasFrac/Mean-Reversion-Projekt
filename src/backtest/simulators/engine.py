@@ -10,18 +10,26 @@ from typing import Mapping as TMapping
 import numpy as np
 import pandas as pd
 
+from backtest.risk.state import PortfolioRiskState
 from backtest.reporting.perf_timer import measure_runtime
 
-from ..calendars import apply_settlement_lag
-from ..config.cfg import BacktestConfig, make_config_from_yaml
-from ..config.types import BorrowCtx
-from ..utils.tz import NY_TZ, coerce_ts_to_tz, to_naive_local
-from . import engine_state as _state
+from ..runner.calendars import apply_settlement_lag
+from ..config.cfg import AppConfig, config_to_dict, parse_config
+from ..config.types import BorrowConfig, BorrowCtx
+from ..utils.tz import (
+    NY_TZ,
+    align_ts_to_index,
+    assert_ny_series,
+    to_ny_series,
+    to_ny_timestamp,
+    to_naive_local,
+)
+from .contracts import BacktestResult, ExecutionContext
 from .engine_mtm import _compute_equity_and_stats, _map_trades_to_daily_pnl
+from .execution_backends import make_execution_backend
 from .engine_pipeline import (
     _build_calendar_and_window,
     _calendar_name_from_cfg,
-    _collect_and_normalize_trades,
     _ensure_exit_after_entry,
     _flat_equity_stats,
     _select_eval_trades,
@@ -36,28 +44,17 @@ from .engine_trades import (
     _recompute_holding_days_inplace,
     _restore_essential_columns,
 )
-from .engine_tz import _to_ex_tz_series, _to_ex_tz_timestamp
-from .baseline_intents import (
+from .intent_scheduler import (
     portfolio_has_intents as _portfolio_has_intents,
-    simulate_baseline_intent_portfolio,
+    simulate_intent_portfolio,
 )
 
 __all__ = [
     "backtest_portfolio",
     "backtest_portfolio_with_yaml_cfg",
-    "_to_ex_tz_series",
-    "_to_ex_tz_timestamp",
 ]
 
-# ---------- Optional deps (risk, execution overlays)
-try:  # pragma: no cover
-    _rm_mod = importlib.import_module("backtest.strat.risk_manager")
-    RiskManager: Any | None = getattr(_rm_mod, "RiskManager", None)
-    _RM_OK = RiskManager is not None
-except Exception:  # pragma: no cover
-    RiskManager = None
-    _RM_OK = False
-
+# ---------- Optional deps (execution overlays)
 try:  # pragma: no cover
     _lob_mod = importlib.import_module("backtest.simulators.lob")
     annotate_with_lob: Any | None = getattr(_lob_mod, "annotate_with_lob", None)
@@ -77,11 +74,12 @@ except Exception:  # pragma: no cover
 logger = logging.getLogger("backtest")
 logger.propagate = True
 
-# --- Timezone policy (single source of truth) ----------------------------------
-# Backtest runs on processing-normalized prices. Exchange TZ is taken from the
-# loaded price series when available, otherwise NY_TZ is used as the fallback.
-_EX_TZ: str = _state._EX_TZ
-_NAIVE_IS_UTC: bool = _state._NAIVE_IS_UTC
+
+def _validate_price_data_contract(price_data: TMapping[str, pd.Series]) -> None:
+    for sym, series in price_data.items():
+        if not isinstance(series, pd.Series):
+            raise ValueError(f"price_data[{sym!r}] must be a Series.")
+        assert_ny_series(series, context=f"backtest price_data[{sym}]")
 
 
 # ============================== Perf helpers ===================================
@@ -89,6 +87,15 @@ def _perf_run(name: str, fn: Callable[[], Any]) -> Any:
     res = measure_runtime(fn)
     logger.info("PERF %-22s | %6.3fs", name, float(res.runtime_sec))
     return res.value
+
+
+def _portfolio_declares_intent_surface(
+    portfolio: Mapping[str, Mapping[str, Any]],
+) -> bool:
+    for meta in (portfolio or {}).values():
+        if isinstance(meta, Mapping) and ("intents" in meta or "state" in meta):
+            return True
+    return False
 
 
 def _apply_risk_gating(
@@ -111,16 +118,11 @@ def _apply_risk_gating(
         logger.warning("Risk gating: missing time cols - skip")
         return trades_df, {"accepted": len(trades_df), "blocked": 0}
 
-    if not _RM_OK or RiskManager is None:
-        logger.warning("RiskManager not available -> risk gating skipped.")
-        return trades_df, {"accepted": len(trades_df), "blocked": 0}
+    rm = PortfolioRiskState(initial_capital, cfg=risk_cfg or {})
 
-    rm_cls = cast(Any, RiskManager)
-    rm = rm_cls(initial_capital, cfg=risk_cfg or {})
-
-    short_policy = getattr(rm, "short_availability_heuristic", None)
-    short_enabled = bool(getattr(short_policy, "enabled", False))
-    block_on_missing = bool(getattr(short_policy, "block_on_missing", True))
+    short_policy = rm.policy.short_heuristic
+    short_enabled = bool(short_policy.enabled)
+    block_on_missing = bool(short_policy.block_on_missing)
 
     short_inputs_available = bool(adv_map)
     if not short_inputs_available and price_data:
@@ -154,8 +156,7 @@ def _apply_risk_gating(
         try:
             if tz0 is None:
                 return to_naive_local(ts)
-            tzname = str(tz0)
-            return coerce_ts_to_tz(ts, tzname)
+            return to_ny_timestamp(ts)
         except Exception:
             return pd.Timestamp(to_naive_local(ts))
 
@@ -256,7 +257,7 @@ def _apply_risk_gating(
             dt_entry = _coerce_ts(pd.Timestamp(r["entry_date"]))
             rm.register_open_pair(pair, (y_sym, x_sym), (ny, nx))
         except Exception:
-            rm.register_open(pair, signed_notional=0.0)
+            rm.register_open_pair(pair, (None, None), (0.0, 0.0))
         try:
             dt_exit = _coerce_ts(pd.Timestamp(r["exit_date"]))
         except Exception:
@@ -405,9 +406,9 @@ def _apply_risk_gating(
                         if allow:
                             rm.register_open_pair(pair, (y_sym, x_sym), (ny, nx))
                     else:
-                        allow = rm.can_open(pair, notional=gross)
+                        allow = rm.can_open_pair(pair, (None, None), (gross, 0.0))
                         if allow:
-                            rm.register_open(pair, signed_notional=0.0)
+                            rm.register_open_pair(pair, (None, None), (0.0, 0.0))
         except Exception as e:
             allow = True
             reason = f"rm_error:{e}"
@@ -443,7 +444,7 @@ def _apply_risk_gating(
 def _apply_borrow_event_enforcement(
     trades_df: pd.DataFrame,
     *,
-    raw_yaml: dict[str, Any] | None,
+    borrow_cfg: BorrowConfig,
     borrow_ctx: Any | None,
 ) -> tuple[pd.DataFrame, dict[str, int]]:
     """
@@ -452,23 +453,18 @@ def _apply_borrow_event_enforcement(
       buy_in_effective -> penalty costs (bps on gross) + optional exit clip
     Availability <= threshold synthesizes buy_in events.
     """
-    raw = raw_yaml or {}
-    enf = (raw.get("borrow") or {}).get("enforcement") or {}
+    enf = borrow_cfg.enforcement
 
-    enabled = bool(enf.get("enabled", False))
-    mode_raw = str(enf.get("mode", "penalty_only"))
+    enabled = bool(enf.enabled)
+    mode_raw = str(enf.mode)
     enf_mode = mode_raw.strip().lower()  # "penalty_only" | "clip_exit"
-    grace = int(enf.get("recall_grace_days", 2))
-    buyin_penalty_bps = float(enf.get("buyin_penalty_bps", 0.0))
-
-    try:
-        ftd_threshold = float(
-            ((raw.get("borrow") or {}).get("ftd_block_threshold") or 0.0)
-        )
-        if not np.isfinite(ftd_threshold):
-            ftd_threshold = 0.0
-    except Exception:
-        ftd_threshold = 0.0
+    grace = int(enf.recall_grace_days)
+    buyin_penalty_bps = float(enf.buyin_penalty_bps)
+    ftd_threshold = (
+        float(borrow_cfg.ftd_block_threshold)
+        if np.isfinite(float(borrow_cfg.ftd_block_threshold))
+        else 0.0
+    )
 
     if not enabled or trades_df is None or trades_df.empty:
         return trades_df, {"changed_exits": 0, "buyin_penalties": 0}
@@ -477,8 +473,7 @@ def _apply_borrow_event_enforcement(
 
     # ensure entry/exit are present and tz-correct
     def _to_dt(s: Any) -> pd.Series:
-        s = _to_ex_tz_series(pd.to_datetime(s, errors="coerce"), _EX_TZ, _NAIVE_IS_UTC)
-        return s
+        return to_ny_series(pd.to_datetime(s, errors="coerce"))
 
     if "entry_date" not in df.columns or df["entry_date"].isna().all():
         for cand in (
@@ -575,39 +570,14 @@ def _apply_borrow_event_enforcement(
     try:
         if borrow_ctx is not None:
             avail = getattr(borrow_ctx, "availability_long", None)
-            if avail is None:
-                avail = getattr(borrow_ctx, "_availability_long", None)
     except Exception:
         avail = None
 
     if isinstance(avail, pd.DataFrame) and not avail.empty:
         a = avail.copy()
-        lc = {c.lower(): c for c in a.columns}
-        date_col = (
-            lc.get("date") or lc.get("day") or lc.get("dt") or lc.get("timestamp")
-        )
-        sym_col = lc.get("symbol") or lc.get("ticker") or lc.get("secid")
-        cand_av = [
-            "available",
-            "avail",
-            "shares_available",
-            "availability",
-            "shares",
-            "qty",
-            "quantity",
-            "locates",
-            "locates_available",
-            "is_available",
-            "borrowable",
-            "borrow_avail",
-        ]
-        av_col = next((lc[c] for c in cand_av if c in lc), None)
-        if date_col and sym_col and av_col:
-            a = a.rename(
-                columns={date_col: "date", sym_col: "symbol", av_col: "available"}
-            )
-            a["date"] = _to_ex_tz_series(
-                pd.to_datetime(a["date"], errors="coerce"), _EX_TZ, _NAIVE_IS_UTC
+        if {"date", "symbol", "available"}.issubset(a.columns):
+            a["date"] = to_ny_series(
+                pd.to_datetime(a["date"], errors="coerce")
             ).dt.normalize()
             a = a.dropna(subset=["date", "symbol"])
             a["symbol"] = a["symbol"].astype(str).str.upper()
@@ -645,43 +615,15 @@ def _apply_borrow_event_enforcement(
         if not isinstance(df_in, pd.DataFrame) or df_in.empty:
             return pd.DataFrame(columns=["date", "symbol", "type"])
         d = df_in.copy()
-        lc = {c.lower(): c for c in d.columns}
-        if "date" not in d.columns and "day" in lc:
-            d = d.rename(columns={lc["day"]: "date"})
-        if "symbol" not in d.columns and "ticker" in lc:
-            d = d.rename(columns={lc["ticker"]: "symbol"})
-        if "type" not in d.columns and "event" in lc:
-            d = d.rename(columns={lc["event"]: "type"})
-        if "date" in d.columns:
-            d["date"] = _to_ex_tz_series(
-                pd.to_datetime(d["date"], errors="coerce"), _EX_TZ, _NAIVE_IS_UTC
-            ).dt.normalize()
-        d = d.dropna(subset=["date", "symbol"])
+        if not {"date", "symbol", "type"}.issubset(d.columns):
+            return pd.DataFrame(columns=["date", "symbol", "type"])
+        d = d[["date", "symbol", "type"]].copy()
+        d["date"] = to_ny_series(
+            pd.to_datetime(d["date"], errors="coerce")
+        ).dt.normalize()
+        d = d.dropna(subset=["date", "symbol", "type"])
         d["symbol"] = d["symbol"].astype(str).str.upper()
-        if "type" not in d.columns:
-            d["type"] = ""
         d["type"] = d["type"].astype(str).str.lower().str.replace("-", "_").str.strip()
-
-        ALIAS = {
-            "buyin": "buy_in_effective",
-            "buy_in": "buy_in_effective",
-            "buyin_effective": "buy_in_effective",
-            "buy_in_eff": "buy_in_effective",
-            "no_availability": "buy_in_effective",
-            "availability_zero": "buy_in_effective",
-            "no_borrow": "buy_in_effective",
-            "ftd": "buy_in_effective",
-            "recallnotice": "recall_notice",
-            "recall_notice": "recall_notice",
-            "recall": "recall_notice",
-        }
-        d["type"] = d["type"].map(lambda t: ALIAS.get(t, t))
-        for c in ("available", "available_num"):
-            if c in d.columns:
-                vv = pd.to_numeric(d[c], errors="coerce").fillna(0.0)
-                d.loc[vv <= max(0.0, ftd_threshold), "type"] = d.loc[
-                    vv <= max(0.0, ftd_threshold), "type"
-                ].replace("", "buy_in_effective")
         return d
 
     ev = _norm_types(ev)
@@ -868,41 +810,23 @@ def _apply_borrow_event_enforcement(
     }
 
 
-# ============================== Engine pipeline helpers ========================
-def _resolve_engine_timezone(
-    _cfg: BacktestConfig, price_data: TMapping[str, pd.Series]
-) -> str:
-    ex_tz = NY_TZ
-    for v in price_data.values():
-        if isinstance(v, pd.Series) and isinstance(v.index, pd.DatetimeIndex):
-            tz = getattr(v.index, "tz", None)
-            if tz is not None:
-                ex_tz = str(tz)
-                break
-    global _EX_TZ
-    _EX_TZ = ex_tz
-    _state._EX_TZ = ex_tz
-    return ex_tz
-
-
 def _apply_pre_execution_hooks(
     trades_df: pd.DataFrame,
     *,
     base_cols: pd.DataFrame,
     price_data: TMapping[str, pd.Series],
-    cfg: BacktestConfig,
+    cfg: AppConfig,
     calendar: pd.DatetimeIndex,
     e0: pd.Timestamp,
     borrow_ctx: BorrowCtx | Any,
     market_data_panel: pd.DataFrame | None,
 ) -> tuple[pd.DataFrame, dict[str, Any] | None]:
     try:
-        raw_yaml = getattr(cfg, "raw_yaml", {}) or {}
         trades_df, enf_rep = _perf_run(
             "borrow.enforcement",
             lambda: _apply_borrow_event_enforcement(
                 trades_df,
-                raw_yaml=raw_yaml if isinstance(raw_yaml, dict) else {},
+                borrow_cfg=cfg.borrow,
                 borrow_ctx=borrow_ctx,
             ),
         )
@@ -933,7 +857,7 @@ def _apply_execution_hooks(
     *,
     base_cols: pd.DataFrame,
     price_data: TMapping[str, pd.Series],
-    cfg: BacktestConfig,
+    cfg: AppConfig,
     calendar: pd.DatetimeIndex,
     e0: pd.Timestamp,
     market_data_panel: pd.DataFrame | None,
@@ -941,26 +865,9 @@ def _apply_execution_hooks(
 ) -> tuple[pd.DataFrame, int, dict[str, int] | None, bool]:
     exec_rejected_count = 0
     exec_reject_reasons: dict[str, int] | None = None
-    raw_yaml = getattr(cfg, "raw_yaml", {}) or {}
-    strict_exec_hooks = bool(
-        isinstance(raw_yaml, dict) and raw_yaml.get("_bo_require_execution_hooks")
-    )
-
-    exec_lob_cfg = getattr(cfg, "exec_lob", {}) or {}
-    lob_enabled = True
-    try:
-        if isinstance(exec_lob_cfg, dict) and exec_lob_cfg.get("enabled") is False:
-            lob_enabled = False
-    except Exception:
-        lob_enabled = True
-
-    exec_light_cfg = getattr(cfg, "exec_light", {}) or {}
-    light_enabled = True
-    try:
-        if isinstance(exec_light_cfg, dict) and exec_light_cfg.get("enabled") is False:
-            light_enabled = False
-    except Exception:
-        light_enabled = True
+    strict_exec_hooks = bool(cfg.runtime.require_execution_hooks)
+    lob_enabled = bool(cfg.execution.lob.enabled)
+    light_enabled = bool(cfg.execution.light.enabled)
 
     def _finalize_exec_overlay(df_in: pd.DataFrame) -> pd.DataFrame:
         nonlocal exec_rejected_count, exec_reject_reasons
@@ -1019,7 +926,7 @@ def _apply_execution_hooks(
         return df_out
 
     try:
-        mode_exec_val = str(getattr(cfg, "exec_mode", "")).lower()
+        mode_exec_val = str(cfg.execution.mode).lower()
         if (
             mode_exec_val == "lob"
             and lob_enabled
@@ -1079,7 +986,7 @@ def _apply_execution_hooks(
 
     overlay_enabled = (
         bool(lob_enabled)
-        if str(getattr(cfg, "exec_mode", "")).lower() == "lob"
+        if str(cfg.execution.mode).lower() == "lob"
         else bool(light_enabled)
     )
     return trades_df, exec_rejected_count, exec_reject_reasons, overlay_enabled
@@ -1088,7 +995,7 @@ def _apply_execution_hooks(
 def _finalize_costs_and_risk(
     trades_df: pd.DataFrame,
     *,
-    cfg: BacktestConfig,
+    cfg: AppConfig,
     calendar: pd.DatetimeIndex,
     price_data: TMapping[str, pd.Series],
     borrow_ctx: BorrowCtx | Any,
@@ -1110,19 +1017,19 @@ def _finalize_costs_and_risk(
     except Exception as e:
         logger.warning("PnL finalization failed -> continue without: %s", e)
 
-    if cfg.risk_enabled and isinstance(cfg.risk_cfg, dict):
+    if cfg.risk.enabled:
         trades_df, rrep = _perf_run(
             "risk.gating",
             lambda: _apply_risk_gating(
                 trades_df,
                 e0=e0,
                 e1=e1,
-                initial_capital=float(cfg.initial_capital),
-                risk_cfg=cast(dict[str, Any], cfg.risk_cfg),
+                initial_capital=float(cfg.backtest.initial_capital),
+                risk_cfg=cast(dict[str, Any], config_to_dict(cfg)["risk"]),
                 price_data=price_data,
                 market_data_panel=market_data_panel,
                 adv_map=adv_map,
-                settlement_lag_bars=int(getattr(cfg, "settlement_lag_bars", 0) or 0),
+                settlement_lag_bars=int(cfg.backtest.settlement_lag_bars),
                 calendar=calendar,
             ),
         )
@@ -1139,12 +1046,12 @@ def _finalize_costs_and_risk(
 def backtest_portfolio(
     portfolio: Mapping[str, Mapping[str, Any]],
     price_data: TMapping[str, pd.Series],
-    cfg: BacktestConfig | None = None,
+    cfg: AppConfig | None = None,
     *,
     borrow_ctx: BorrowCtx | Any = None,
     market_data_panel: pd.DataFrame | None = None,
     adv_map: Mapping[str, float] | None = None,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
+) -> BacktestResult:
     """
     Core backtest. Returns (stats, trades_df).
 
@@ -1154,165 +1061,96 @@ def backtest_portfolio(
     - Market Rules, Borrow Enforcement, Execution annotations, Risk gating are preserved.
     - Calendar mapping is robust with policy + fallbacks; settlement lag applied once.
     """
-    cfg = cfg or BacktestConfig()
-
-    # Legacy default behaviour for mapping: map exits to PRIOR session unless overridden
-    if not getattr(cfg, "calendar_mapping", None):
-        try:
-            setattr(cfg, "calendar_mapping", "prior")
-        except Exception:
-            pass
-
-    if not hasattr(cfg, "raw_yaml") or not isinstance(getattr(cfg, "raw_yaml"), dict):
-        try:
-            setattr(cfg, "raw_yaml", {})
-        except Exception:
-            pass
+    if cfg is None:
+        raise ValueError("cfg must be provided as AppConfig")
 
     mode = "conservative"
 
-    # --- Exchange tz resolution (single source of truth) -----------------------
-    ex_tz = _resolve_engine_timezone(cfg, price_data)
+    _validate_price_data_contract(price_data)
 
     logger.info(
         "ENGINE | pairs=%d | price_symbols=%d | mode=%s | ex_tz=%s",
         len(portfolio),
         len(price_data),
         mode,
-        _EX_TZ,
+        NY_TZ,
     )
-    logger.info("ENGINE | tz_policy naive_is_utc=%s", _NAIVE_IS_UTC)
 
     # --- Calendar & eval window ------------------------------------------------
-    calendar, e0, e1 = _build_calendar_and_window(cfg, price_data, ex_tz=ex_tz)
+    calendar, e0, e1 = _build_calendar_and_window(cfg, price_data)
 
-    if _portfolio_has_intents(portfolio):
-        trades_df = simulate_baseline_intent_portfolio(
-            portfolio=portfolio,
-            price_data=price_data,
-            cfg_obj=cfg,
-            market_data_panel=market_data_panel,
-            adv_map=adv_map,
-            calendar=calendar,
-            initial_capital=float(cfg.initial_capital),
-        )
-        trades_df, rep = _clip_trades_to_eval_window(
-            trades_df,
-            e0=e0,
-            e1=e1,
-            price_data=price_data,
-        )
-        if int(rep.get("hard_exits", 0)) > 0:
-            logger.info(
-                "ENGINE | hard_exit(window_end)=%d",
-                int(rep.get("hard_exits", 0)),
-            )
-        if trades_df.empty:
+    if not _portfolio_has_intents(portfolio):
+        if _portfolio_declares_intent_surface(portfolio) or not portfolio:
             stats = _flat_equity_stats(calendar, cfg=cfg, mode=mode, e0=e0, e1=e1)
             stats.attrs.update(
                 {
-                    "exec_mode": cfg.exec_mode,
-                    "exec_lob_enabled": bool(cfg.exec_mode == "lob"),
-                    "exec_light_enabled": bool(cfg.exec_mode == "light"),
+                    "exec_mode": cfg.execution.mode,
+                    "exec_lob_enabled": bool(cfg.execution.mode == "lob"),
+                    "exec_light_enabled": bool(cfg.execution.mode == "light"),
                     "exec_rejected_count": 0,
-                    "settlement_lag_bars": int(
-                        getattr(cfg, "settlement_lag_bars", 0) or 0
-                    ),
+                    "settlement_lag_bars": int(cfg.backtest.settlement_lag_bars),
+                    "entry_intents_df": pd.DataFrame(),
+                    "state_transitions_df": pd.DataFrame(),
+                    "exec_entry_blocked_count": 0,
+                    "exec_delayed_entry_count": 0,
+                    "exec_delayed_exit_count": 0,
+                    "exec_forced_exit_count": 0,
+                    "exec_reject_reasons": {},
+                    "exec_regime_histogram": {"entry": {}, "exit": {}},
                 }
             )
-            for attr_name in (
-                "exec_entry_blocked_count",
-                "exec_delayed_entry_count",
-                "exec_delayed_exit_count",
-                "exec_forced_exit_count",
-                "exec_regime_histogram",
-                "entry_intents_df",
-                "state_transitions_df",
-            ):
-                if attr_name in trades_df.attrs:
-                    stats.attrs[attr_name] = trades_df.attrs[attr_name]
-            return stats, _finalize_trade_columns(trades_df)
-        essentials = [
-            c
-            for c in [
-                "entry_date",
-                "exit_date",
-                "pair",
-                "y_symbol",
-                "x_symbol",
-                "symbol",
-                "asset",
-                "ticker",
-            ]
-            if c in trades_df.columns
-        ]
-        base_cols = trades_df[essentials].copy() if essentials else pd.DataFrame()
-        trades_df, _ = _apply_pre_execution_hooks(
-            trades_df,
-            base_cols=base_cols,
-            price_data=price_data,
-            cfg=cfg,
-            calendar=calendar,
-            e0=e0,
-            borrow_ctx=borrow_ctx,
-            market_data_panel=market_data_panel,
-        )
-        try:
-            trades_df = _perf_run(
-                "pnl.finalize",
-                lambda: _finalize_costs_and_net(
-                    trades_df,
-                    calendar=calendar,
-                    price_data=price_data,
-                    borrow_ctx=borrow_ctx,
-                ),
+            empty_trades = _finalize_trade_columns(pd.DataFrame())
+            return BacktestResult(
+                stats=stats,
+                trades=empty_trades,
+                entry_intents=pd.DataFrame(),
+                state_transitions=pd.DataFrame(),
+                debug_artifacts={},
             )
-        except Exception as e:
-            logger.warning("PnL finalization failed -> continue without: %s", e)
+        raise ValueError(
+            "backtest engine now requires intent-based portfolios. "
+            "Replay/stateful trade carry must happen outside the core engine."
+        )
 
-        trades_eval = _select_eval_trades(trades_df, e0=e0, e1=e1)
-        daily_pnl, daily_gross, mapped_rows, dropped = _map_trades_to_daily_pnl(
-            trades_eval,
-            calendar=calendar,
-            cfg=cfg,
-            price_data=price_data,
-            borrow_ctx=borrow_ctx,
+    intent_ctx = ExecutionContext(
+        cfg_obj=cfg,
+        price_data=price_data,
+        market_data_panel=market_data_panel,
+        adv_map=adv_map,
+        calendar=calendar,
+    )
+    intent_result = simulate_intent_portfolio(
+        portfolio=portfolio,
+        ctx=intent_ctx,
+        backend=make_execution_backend(cfg),
+        initial_capital=float(cfg.backtest.initial_capital),
+    )
+    trades_df = intent_result.trades.copy()
+    trades_df, rep = _clip_trades_to_eval_window(
+        trades_df,
+        e0=e0,
+        e1=e1,
+        price_data=price_data,
+    )
+    if int(rep.get("hard_exits", 0)) > 0:
+        logger.info(
+            "ENGINE | hard_exit(window_end)=%d",
+            int(rep.get("hard_exits", 0)),
         )
-        if dropped:
-            logger.info(
-                "MTM mapping dropped %d/%d trades (missing prices or timestamps).",
-                dropped,
-                len(trades_eval),
-            )
-        stats, fin_info = _compute_equity_and_stats(
-            daily_pnl,
-            daily_gross,
-            calendar=calendar,
-            cfg=cfg,
-            trades_eval=trades_eval,
-        )
+
+    if trades_df.empty:
+        stats = _flat_equity_stats(calendar, cfg=cfg, mode=mode, e0=e0, e1=e1)
         stats.attrs.update(
             {
-                "EquityFinal": float(stats["equity"].iloc[-1]),
-                "EquityRawEnd": float(stats["equity"].iloc[-1]),
-                "Sharpe": float(fin_info.get("sharpe", 0.0)),
-                "CAGR": float(fin_info.get("cagr", float("nan"))),
-                "MaxDrawdown": float(fin_info.get("max_drawdown", 0.0)),
-                "WinRate": float(fin_info.get("win_rate", 0.0)),
-                "NumTrades": int(len(trades_eval)),
-                "mode": mode,
-                "eval_window_start": e0.isoformat(),
-                "eval_window_end": e1.isoformat(),
-                "mapped_trades": int(mapped_rows),
-                "pnl_mode": "mtm",
-                "mtm_dropped_trades": int(dropped),
-                "calendar_name": _calendar_name_from_cfg(cfg),
-                "calendar_source": "exchange_calendars",
-                "exec_mode": cfg.exec_mode,
-                "exec_lob_enabled": bool(cfg.exec_mode == "lob"),
-                "exec_light_enabled": bool(cfg.exec_mode == "light"),
-                "exec_rejected_count": 0,
-                "settlement_lag_bars": int(getattr(cfg, "settlement_lag_bars", 0) or 0),
+                "exec_mode": cfg.execution.mode,
+                "exec_lob_enabled": bool(cfg.execution.mode == "lob"),
+                "exec_light_enabled": bool(cfg.execution.mode == "light"),
+                "exec_rejected_count": int(
+                    intent_result.debug_artifacts.get("exec_entry_blocked_count", 0)
+                ),
+                "settlement_lag_bars": int(cfg.backtest.settlement_lag_bars),
+                "entry_intents_df": intent_result.entry_intents,
+                "state_transitions_df": intent_result.state_transitions,
             }
         )
         for attr_name in (
@@ -1320,46 +1158,20 @@ def backtest_portfolio(
             "exec_delayed_entry_count",
             "exec_delayed_exit_count",
             "exec_forced_exit_count",
+            "exec_reject_reasons",
             "exec_regime_histogram",
-            "entry_intents_df",
-            "state_transitions_df",
         ):
-            if attr_name in trades_df.attrs:
-                stats.attrs[attr_name] = trades_df.attrs[attr_name]
+            if attr_name in intent_result.debug_artifacts:
+                stats.attrs[attr_name] = intent_result.debug_artifacts[attr_name]
         trades_df = _finalize_trade_columns(trades_df)
-        return stats, trades_df
-
-    # --- Collect & normalize portfolio trades ---------------------------------
-    frames, dropped_outside_eval, hard_exit_count, total_trades_seen = (
-        _collect_and_normalize_trades(
-            portfolio,
-            calendar=calendar,
-            e0=e0,
-            e1=e1,
-            price_data=price_data,
+        return BacktestResult(
+            stats=stats,
+            trades=trades_df,
+            entry_intents=intent_result.entry_intents,
+            state_transitions=intent_result.state_transitions,
+            debug_artifacts=intent_result.debug_artifacts,
         )
-    )
 
-    if not frames:
-        stats = _flat_equity_stats(calendar, cfg=cfg, mode=mode, e0=e0, e1=e1)
-        return stats, pd.DataFrame()
-
-    if dropped_outside_eval > 0:
-        logger.info(
-            "ENGINE | dropped %d/%d trades outside eval window [%s..%s]",
-            dropped_outside_eval,
-            total_trades_seen,
-            str(e0),
-            str(e1),
-        )
-    if hard_exit_count > 0:
-        logger.info("ENGINE | hard_exit(window_end)=%d", hard_exit_count)
-
-    trades_df = pd.concat(frames, ignore_index=True)
-    # Ensure exit strictly after entry -> next bar fallback
-    trades_df = _ensure_exit_after_entry(trades_df, calendar)
-
-    # essential snapshot for recovery after hooks
     essentials = [
         c
         for c in [
@@ -1374,8 +1186,7 @@ def backtest_portfolio(
         ]
         if c in trades_df.columns
     ]
-    base_cols = trades_df[essentials].copy()
-
+    base_cols = trades_df[essentials].copy() if essentials else pd.DataFrame()
     trades_df, _ = _apply_pre_execution_hooks(
         trades_df,
         base_cols=base_cols,
@@ -1386,33 +1197,18 @@ def backtest_portfolio(
         borrow_ctx=borrow_ctx,
         market_data_panel=market_data_panel,
     )
-
-    # ---- Execution annotations -------------------------------------------------
-    # Supported execution overlays are LOB and light. Older modes remain removed.
-    trades_df, exec_rejected_count, exec_reject_reasons, exec_overlay_enabled = (
-        _apply_execution_hooks(
-            trades_df,
-            base_cols=base_cols,
-            price_data=price_data,
-            cfg=cfg,
-            calendar=calendar,
-            e0=e0,
-            market_data_panel=market_data_panel,
-            adv_map=adv_map,
+    try:
+        trades_df = _perf_run(
+            "pnl.finalize",
+            lambda: _finalize_costs_and_net(
+                trades_df,
+                calendar=calendar,
+                price_data=price_data,
+                borrow_ctx=borrow_ctx,
+            ),
         )
-    )
-
-    trades_df = _finalize_costs_and_risk(
-        trades_df,
-        cfg=cfg,
-        calendar=calendar,
-        price_data=price_data,
-        borrow_ctx=borrow_ctx,
-        e0=e0,
-        e1=e1,
-        market_data_panel=market_data_panel,
-        adv_map=adv_map,
-    )
+    except Exception as e:
+        logger.warning("PnL finalization failed -> continue without: %s", e)
 
     # ---- Eval subset (tz-hardened) --------------------------------------------
     trades_eval = _select_eval_trades(trades_df, e0=e0, e1=e1)
@@ -1459,13 +1255,15 @@ def backtest_portfolio(
             "mtm_dropped_trades": int(dropped),
             "calendar_name": _calendar_name_from_cfg(cfg),
             "calendar_source": "exchange_calendars",
-            "exec_mode": cfg.exec_mode,
-            "exec_lob_enabled": bool(cfg.exec_mode == "lob" and exec_overlay_enabled),
-            "exec_light_enabled": bool(
-                cfg.exec_mode == "light" and exec_overlay_enabled
+            "exec_mode": cfg.execution.mode,
+            "exec_lob_enabled": bool(cfg.execution.mode == "lob"),
+            "exec_light_enabled": bool(cfg.execution.mode == "light"),
+            "exec_rejected_count": int(
+                intent_result.debug_artifacts.get("exec_entry_blocked_count", 0)
             ),
-            "exec_rejected_count": int(exec_rejected_count),
-            "settlement_lag_bars": int(getattr(cfg, "settlement_lag_bars", 0) or 0),
+            "settlement_lag_bars": int(cfg.backtest.settlement_lag_bars),
+            "entry_intents_df": intent_result.entry_intents,
+            "state_transitions_df": intent_result.state_transitions,
         }
     )
     for attr_name in (
@@ -1473,15 +1271,19 @@ def backtest_portfolio(
         "exec_delayed_entry_count",
         "exec_delayed_exit_count",
         "exec_forced_exit_count",
+        "exec_reject_reasons",
         "exec_regime_histogram",
     ):
-        if attr_name in trades_df.attrs:
-            stats.attrs[attr_name] = trades_df.attrs[attr_name]
-    if exec_reject_reasons is not None:
-        stats.attrs["exec_reject_reasons"] = dict(exec_reject_reasons)
+        if attr_name in intent_result.debug_artifacts:
+            stats.attrs[attr_name] = intent_result.debug_artifacts[attr_name]
     trades_df = _finalize_trade_columns(trades_df)
-
-    return stats, trades_df
+    return BacktestResult(
+        stats=stats,
+        trades=trades_df,
+        entry_intents=intent_result.entry_intents,
+        state_transitions=intent_result.state_transitions,
+        debug_artifacts=intent_result.debug_artifacts,
+    )
 
 
 # ============================== YAML wrapper & legacy ===========================
@@ -1494,15 +1296,8 @@ def backtest_portfolio_with_yaml_cfg(
     market_data_panel: pd.DataFrame | None = None,
     adv_map: Mapping[str, float] | None = None,
     **kwargs: Any,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    cfg_obj = make_config_from_yaml(yaml_cfg)
-    try:
-        if not hasattr(cfg_obj, "raw_yaml") or not isinstance(
-            getattr(cfg_obj, "raw_yaml"), dict
-        ):
-            setattr(cfg_obj, "raw_yaml", yaml_cfg)
-    except Exception:
-        pass
+) -> BacktestResult:
+    cfg_obj = parse_config(yaml_cfg)
 
     return backtest_portfolio(
         portfolio=portfolio,

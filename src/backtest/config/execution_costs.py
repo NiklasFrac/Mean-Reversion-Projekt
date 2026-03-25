@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from dataclasses import asdict, is_dataclass
 from dataclasses import dataclass
 from typing import Any, Literal, Mapping
+
+from .types import AppConfig
 
 
 @dataclass(frozen=True)
@@ -17,6 +20,10 @@ class ExecutionCostSpec:
 
 
 def _as_dict(value: Any) -> dict[str, Any]:
+    if isinstance(value, AppConfig):
+        return asdict(value)
+    if is_dataclass(value):
+        return asdict(value)
     return dict(value) if isinstance(value, Mapping) else {}
 
 

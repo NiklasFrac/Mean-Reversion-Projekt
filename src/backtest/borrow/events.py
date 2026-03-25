@@ -1,49 +1,26 @@
 from __future__ import annotations
 
 import logging
-import os
-from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from backtest.utils.common.io import load_yaml_dict_safe as _load_yaml_safe
+from backtest.config.types import BorrowConfig
 from backtest.utils.tz import to_naive_day
 
 logger = logging.getLogger("backtest.borrow.events")
-
-
-def _get(mapping: Mapping[str, Any], path: str, default: Any = None) -> Any:
-    cur: Any = mapping
-    for key in str(path).split("."):
-        if not isinstance(cur, Mapping) or key not in cur:
-            return default
-        cur = cur[key]
-    return cur
-
-
-def _discover_config_path() -> Path | None:
-    for env in ("WF_CFG", "WF_CONFIG", "BT_CFG", "BT_CONFIG"):
-        v = os.getenv(env)
-        if v:
-            p = Path(v)
-            if p.exists():
-                return p
-    for cand in (
-        Path("runs/configs/config_backtest.yaml"),
-        Path("runs/configs/config_processing.yaml"),
-        Path("runs/configs/config_universe.yaml"),
-    ):
-        if cand.exists():
-            return cand
-    return None
-
-
-def _load_yaml(path: Path | None) -> dict[str, Any]:
-    return _load_yaml_safe(
-        path, default={}, logger=logger, warn_msg="Borrow: YAML load failed"
-    )
+_EVENT_COLUMNS = [
+    "date",
+    "symbol",
+    "type",
+    "rate_annual",
+    "locate_fee_bps",
+    "lead_days",
+    "notes",
+]
+def _empty_events() -> pd.DataFrame:
+    return pd.DataFrame(columns=_EVENT_COLUMNS)
 
 
 def _symbol_seed(sym: str) -> int:
@@ -59,7 +36,7 @@ def generate_borrow_events(
     *,
     universe: list[str] | tuple[str, ...] | set[str],
     day: Any,
-    cfg_path: Path | None = None,
+    borrow_cfg: BorrowConfig | None = None,
     lead_days: Any | None = None,
     locate_fee_bps: Any | None = None,
     availability_df: pd.DataFrame | None = None,
@@ -72,7 +49,7 @@ def generate_borrow_events(
       ["date","symbol","type","rate_annual","locate_fee_bps","lead_days","notes"]
 
     - If `borrow_ctx` provides resolve_borrow_rate(symbol, day), uses it.
-    - Else loads cfg YAML (defaults to runs/configs/config_backtest.yaml) and uses borrow defaults.
+    - Else uses the provided typed `borrow_cfg`.
     - Availability is passed through only as a tag in 'notes' (no enforcement here).
     """
     syms = sorted({str(s).strip().upper() for s in universe if str(s).strip()})
@@ -82,59 +59,44 @@ def generate_borrow_events(
     else:
         d = to_naive_day(pd.Timestamp(day_ts))
     if not syms or pd.isna(d):
-        return pd.DataFrame(
-            columns=[
-                "date",
-                "symbol",
-                "type",
-                "rate_annual",
-                "locate_fee_bps",
-                "lead_days",
-                "notes",
-            ]
-        )
+        return _empty_events()
 
-    y = _load_yaml(cfg_path or _discover_config_path())
-    bcfg = dict(_get(y, "borrow", {}) or {})
-    enabled = bool(bcfg.get("enabled", False))
+    if borrow_cfg is not None and not isinstance(borrow_cfg, BorrowConfig):
+        raise TypeError("borrow_cfg must be a BorrowConfig")
+
+    enabled = bool(borrow_cfg.enabled) if borrow_cfg is not None else False
     if borrow_ctx is not None and hasattr(borrow_ctx, "enabled"):
         try:
             enabled = bool(getattr(borrow_ctx, "enabled"))
         except Exception:
             pass
     if not enabled:
-        return pd.DataFrame(
-            columns=[
-                "date",
-                "symbol",
-                "type",
-                "rate_annual",
-                "locate_fee_bps",
-                "lead_days",
-                "notes",
-            ]
-        )
+        return _empty_events()
 
     try:
         default_rate = (
             float(getattr(borrow_ctx, "default_rate_annual"))
             if borrow_ctx is not None
-            else float(bcfg.get("default_rate_annual", 0.0))
+            else float(borrow_cfg.default_rate_annual if borrow_cfg is not None else 0.0)
         )
     except Exception:
-        default_rate = float(bcfg.get("default_rate_annual", 0.0) or 0.0)
+        default_rate = float(
+            borrow_cfg.default_rate_annual if borrow_cfg is not None else 0.0
+        )
 
     try:
         day_basis = (
             int(getattr(borrow_ctx, "day_basis"))
             if borrow_ctx is not None
-            else int(bcfg.get("day_basis", 252))
+            else int(borrow_cfg.day_basis if borrow_cfg is not None else 252)
         )
     except Exception:
-        day_basis = int(bcfg.get("day_basis", 252) or 252)
+        day_basis = int(borrow_cfg.day_basis if borrow_cfg is not None else 252)
 
     try:
-        jitter_sigma = float(bcfg.get("synthetic_jitter_sigma", 0.0) or 0.0)
+        jitter_sigma = float(
+            borrow_cfg.synthetic_jitter_sigma if borrow_cfg is not None else 0.0
+        )
     except Exception:
         jitter_sigma = 0.0
 
@@ -200,14 +162,4 @@ def generate_borrow_events(
         out["lead_days"] = pd.to_numeric(out["lead_days"], errors="coerce").astype(
             "Int64"
         )
-    return out[
-        [
-            "date",
-            "symbol",
-            "type",
-            "rate_annual",
-            "locate_fee_bps",
-            "lead_days",
-            "notes",
-        ]
-    ]
+    return out[_EVENT_COLUMNS]

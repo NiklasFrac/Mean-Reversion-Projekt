@@ -95,7 +95,6 @@ def _infer_short_leg(row: pd.Series) -> tuple[str | None, float]:
         short_sym = x_sym if sig >= 0 else y_sym
         return (short_sym, float(abs(gross) / 2.0))
 
-    # single-asset schema fallback
     sym = row.get("symbol") or row.get("ticker") or row.get("asset")
     sym_s = str(sym).strip().upper() if sym is not None else None
     notional = _get_first_float(row, ("notional", "gross_notional"))
@@ -218,20 +217,17 @@ def _infer_short_symbol_and_units(row: pd.Series) -> tuple[str | None, int | Non
     except Exception:
         xu_i = None
 
-    # If we have signed units, pick the negative leg as short.
     if yu_i is not None and xu_i is not None:
         if yu_i < 0 and xu_i >= 0:
             return (y_sym, abs(int(yu_i)))
         if xu_i < 0 and yu_i >= 0:
             return (x_sym, abs(int(xu_i)))
 
-    # Single-leg hint: sometimes only one leg exists in the row.
     if xu_i is not None and xu_i < 0 and x_sym:
         return (x_sym, abs(int(xu_i)))
     if yu_i is not None and yu_i < 0 and y_sym:
         return (y_sym, abs(int(yu_i)))
 
-    # Single-asset fallback
     sym = row.get("symbol") or row.get("ticker") or row.get("asset")
     sym_s = str(sym).strip().upper() if sym is not None else None
     return (sym_s, None)
@@ -268,7 +264,6 @@ def _build_day_schedule(
         except Exception:
             sched = pd.DatetimeIndex([])
     else:
-        # "busdays": approximate using pandas business-days
         try:
             sched = pd.bdate_range(entry_d, end_d, freq="B")
         except Exception:
@@ -277,6 +272,151 @@ def _build_day_schedule(
     if sched.empty and min_days > 0:
         sched = pd.DatetimeIndex([entry_d])
     return sched
+
+
+def _entry_notional_days(
+    row: pd.Series,
+    *,
+    entry_day: pd.Timestamp,
+    exit_day: pd.Timestamp,
+    day_count: str,
+    include_exit_day: bool,
+    min_days: int,
+) -> int:
+    days = _get_first_float(row, ("holding_days",))
+    if days is not None and np.isfinite(days) and days > 0:
+        return int(max(min_days, round(float(days))))
+    if day_count == "calendar_days":
+        n_days = _calendar_days_between(
+            entry_day, exit_day, include_end=bool(include_exit_day)
+        )
+    else:
+        n_days = _busdays_between(entry_day, exit_day)
+    return int(max(min_days, n_days))
+
+
+def _entry_notional_schedule(
+    *,
+    entry_day: pd.Timestamp,
+    day_count: str,
+    n_days: int,
+    min_days: int,
+) -> pd.DatetimeIndex:
+    try:
+        if day_count == "calendar_days":
+            sched = pd.date_range(entry_day, periods=n_days, freq="D")
+        else:
+            sched = pd.bdate_range(entry_day, periods=n_days, freq="B")
+    except Exception:
+        sched = pd.DatetimeIndex([])
+    if sched.empty and min_days > 0:
+        sched = pd.DatetimeIndex([entry_day])
+    return sched
+
+
+def _compute_borrow_daily_series(
+    row: pd.Series,
+    *,
+    calendar: pd.DatetimeIndex,
+    price_data: Mapping[str, pd.Series] | None,
+    borrow_ctx: Any,
+) -> pd.Series:
+    if borrow_ctx is None or row is None:
+        return pd.Series(dtype=float)
+
+    entry = _to_ts(row.get("entry_date"))
+    exit_ = _to_ts(row.get("exit_date"))
+    if entry is None or exit_ is None:
+        return pd.Series(dtype=float)
+
+    try:
+        entry_d = to_naive_day(pd.Timestamp(entry))
+        exit_d = to_naive_day(pd.Timestamp(exit_))
+    except Exception:
+        return pd.Series(dtype=float)
+
+    accrual_mode, day_count, include_exit_day, min_days = _get_borrow_cfg(borrow_ctx)
+    basis = _day_basis(borrow_ctx)
+    if basis <= 0:
+        basis = 252
+
+    short_sym, short_notional_entry = _infer_short_leg(row)
+    short_sym_u, short_units_abs = _infer_short_symbol_and_units(row)
+    if short_sym is None and short_sym_u is not None:
+        short_sym = short_sym_u
+    if not short_sym:
+        return pd.Series(dtype=float)
+
+    rate_entry = _resolve_rate(borrow_ctx, short_sym, entry_d)
+    if not (np.isfinite(rate_entry) and rate_entry > 0):
+        return pd.Series(dtype=float)
+
+    if accrual_mode in {"entry_notional", "simple", "legacy"}:
+        if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
+            return pd.Series(dtype=float)
+        n_days = _entry_notional_days(
+            row,
+            entry_day=entry_d,
+            exit_day=exit_d,
+            day_count=day_count,
+            include_exit_day=bool(include_exit_day),
+            min_days=min_days,
+        )
+        sched = _entry_notional_schedule(
+            entry_day=entry_d,
+            day_count=day_count,
+            n_days=n_days,
+            min_days=min_days,
+        )
+        if sched.empty:
+            return pd.Series(dtype=float)
+        daily_cost = -(float(rate_entry) / float(basis)) * float(short_notional_entry)
+        return pd.Series([daily_cost] * len(sched), index=sched, dtype=float)
+
+    sched = _build_day_schedule(
+        entry_day=entry_d,
+        exit_day=exit_d,
+        calendar=calendar,
+        day_count=day_count,
+        include_exit_day=bool(include_exit_day),
+        min_days=min_days,
+    )
+    if sched.empty:
+        return pd.Series(dtype=float)
+
+    px_series = (
+        None if price_data is None else price_data.get(str(short_sym).strip().upper())
+    )
+    can_mtm = (
+        short_units_abs is not None
+        and isinstance(px_series, pd.Series)
+        and not px_series.empty
+    )
+
+    out: list[float] = []
+    for d in sched:
+        rate_d = _resolve_rate(borrow_ctx, short_sym, pd.Timestamp(d))
+        if not (np.isfinite(rate_d) and rate_d > 0):
+            out.append(0.0)
+            continue
+
+        notional_d = None
+        if can_mtm:
+            px_series_t = cast(pd.Series, px_series)
+            px = _asof_price(px_series_t, pd.Timestamp(d))
+            if px is not None:
+                units_abs = int(cast(int, short_units_abs))
+                notional_d = float(abs(units_abs)) * float(px)
+
+        if notional_d is None:
+            if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
+                out.append(0.0)
+                continue
+            notional_d = float(short_notional_entry)
+
+        out.append(-(float(rate_d) / float(basis)) * float(notional_d))
+
+    return pd.Series(out, index=sched, dtype=float)
 
 
 def compute_borrow_meta_for_trade_row(
@@ -325,16 +465,13 @@ def compute_borrow_meta_for_trade_row(
     if entry is None or exit_ is None:
         return out
 
-    # For daily borrow we only need normalized dates; keep tz semantics stable.
     try:
         entry_d = to_naive_day(pd.Timestamp(entry))
         exit_d = to_naive_day(pd.Timestamp(exit_))
     except Exception:
         return out
 
-    short_sym_units = _infer_short_symbol_and_units(row)
-    short_sym = short_sym_units[0]
-    short_units_abs = short_sym_units[1]
+    short_sym, short_units_abs = _infer_short_symbol_and_units(row)
     out["short_symbol"] = short_sym
     out["short_units_abs"] = (
         int(short_units_abs) if short_units_abs is not None else None
@@ -343,7 +480,6 @@ def compute_borrow_meta_for_trade_row(
     if short_sym:
         out["rate_entry"] = float(_resolve_rate(borrow_ctx, short_sym, entry_d))
 
-    # Days count only (used for report sanity).
     sched0 = _build_day_schedule(
         entry_day=entry_d,
         exit_day=exit_d,
@@ -358,7 +494,6 @@ def compute_borrow_meta_for_trade_row(
         else int(max(min_days, 0))
     )
 
-    # MTM availability info (optional)
     if (
         accrual_mode == "mtm_daily"
         and short_sym
@@ -368,9 +503,8 @@ def compute_borrow_meta_for_trade_row(
         px = price_data.get(short_sym)
         if isinstance(px, pd.Series) and not px.empty:
             out["mtm_price_used"] = True
-            sched = sched0
             miss = 0
-            for d in sched:
+            for d in sched0:
                 if _asof_price(px, pd.Timestamp(d)) is None:
                     miss += 1
             out["mtm_missing_price_days"] = int(miss)
@@ -392,108 +526,16 @@ def compute_borrow_cost_for_trade_row(
     - Optional paper-default: MTM daily accrual on calendar-days using last close as-of each day.
     - Returns a negative cash cost (<= 0).
     """
-    if borrow_ctx is None or row is None:
-        return 0.0
-
-    entry = _to_ts(row.get("entry_date"))
-    exit_ = _to_ts(row.get("exit_date"))
-    if entry is None or exit_ is None:
-        return 0.0
-
-    # Normalize to daily (borrow accrual is a daily ledger).
-    try:
-        entry_d = to_naive_day(pd.Timestamp(entry))
-        exit_d = to_naive_day(pd.Timestamp(exit_))
-    except Exception:
-        return 0.0
-
-    accrual_mode, day_count, include_exit_day, min_days = _get_borrow_cfg(borrow_ctx)
-    basis = _day_basis(borrow_ctx)
-    if basis <= 0:
-        basis = 252
-
-    short_sym, short_notional_entry = _infer_short_leg(row)
-    short_sym_u, short_units_abs = _infer_short_symbol_and_units(row)
-    if short_sym is None and short_sym_u is not None:
-        short_sym = short_sym_u
-
-    if not short_sym:
-        return 0.0
-
-    # Resolve entry-rate first (used for legacy mode and as fallback).
-    rate_entry = _resolve_rate(borrow_ctx, short_sym, entry_d)
-    if not (np.isfinite(rate_entry) and rate_entry > 0):
-        return 0.0
-
-    # -------- Legacy: entry-notional × n_days --------------------------------
-    if accrual_mode in {"entry_notional", "simple", "legacy"}:
-        days = _get_first_float(row, ("holding_days",))
-        if days is not None and np.isfinite(days) and days > 0:
-            n_days = int(max(min_days, round(float(days))))
-        else:
-            if day_count == "calendar_days":
-                n_days = _calendar_days_between(
-                    entry_d, exit_d, include_end=bool(include_exit_day)
-                )
-            else:
-                n_days = _busdays_between(entry_d, exit_d)
-            n_days = int(max(min_days, n_days))
-
-        if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
-            return 0.0
-        cost = (
-            -(float(rate_entry) / float(basis))
-            * float(n_days)
-            * float(short_notional_entry)
-        )
-        return float(cost) if np.isfinite(cost) else 0.0
-
-    # -------- Paper-default: MTM daily accrual --------------------------------
-    # Determine the day schedule first.
-    sched = _build_day_schedule(
-        entry_day=entry_d,
-        exit_day=exit_d,
+    daily = _compute_borrow_daily_series(
+        row,
         calendar=calendar,
-        day_count=day_count,
-        include_exit_day=bool(include_exit_day),
-        min_days=min_days,
+        price_data=price_data,
+        borrow_ctx=borrow_ctx,
     )
-    if sched.empty:
+    if daily.empty:
         return 0.0
-
-    # Prefer MTM notional if we have units + prices; otherwise fall back to entry notional.
-    px_series = (
-        None if price_data is None else price_data.get(str(short_sym).strip().upper())
-    )
-    can_mtm = (
-        short_units_abs is not None
-        and isinstance(px_series, pd.Series)
-        and not px_series.empty
-    )
-
-    total = 0.0
-    for d in sched:
-        rate_d = _resolve_rate(borrow_ctx, short_sym, pd.Timestamp(d))
-        if not (np.isfinite(rate_d) and rate_d > 0):
-            continue
-
-        notional_d = None
-        if can_mtm:
-            px_series_t = cast(pd.Series, px_series)
-            px = _asof_price(px_series_t, pd.Timestamp(d))
-            if px is not None:
-                units_abs = int(cast(int, short_units_abs))
-                notional_d = float(abs(units_abs)) * float(px)
-
-        if notional_d is None:
-            # fallback: constant entry notional
-            if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
-                continue
-            notional_d = float(short_notional_entry)
-
-        total += -(float(rate_d) / float(basis)) * float(notional_d)
-
-    return float(total) if np.isfinite(total) else 0.0
+    total = float(daily.sum())
+    return total if np.isfinite(total) else 0.0
 
 
 def compute_borrow_daily_costs_for_trade_row(
@@ -507,110 +549,12 @@ def compute_borrow_daily_costs_for_trade_row(
     Daily borrow accrual series (<=0) for one trade.
     Returns empty Series if borrow is not applicable.
     """
-    if borrow_ctx is None or row is None:
-        return pd.Series(dtype=float)
-
-    entry = _to_ts(row.get("entry_date"))
-    exit_ = _to_ts(row.get("exit_date"))
-    if entry is None or exit_ is None:
-        return pd.Series(dtype=float)
-
-    try:
-        entry_d = to_naive_day(pd.Timestamp(entry))
-        exit_d = to_naive_day(pd.Timestamp(exit_))
-    except Exception:
-        return pd.Series(dtype=float)
-
-    accrual_mode, day_count, include_exit_day, min_days = _get_borrow_cfg(borrow_ctx)
-    basis = _day_basis(borrow_ctx)
-    if basis <= 0:
-        basis = 252
-
-    short_sym, short_notional_entry = _infer_short_leg(row)
-    short_sym_u, short_units_abs = _infer_short_symbol_and_units(row)
-    if short_sym is None and short_sym_u is not None:
-        short_sym = short_sym_u
-
-    if not short_sym:
-        return pd.Series(dtype=float)
-
-    rate_entry = _resolve_rate(borrow_ctx, short_sym, entry_d)
-    if not (np.isfinite(rate_entry) and rate_entry > 0):
-        return pd.Series(dtype=float)
-
-    if accrual_mode in {"entry_notional", "simple", "legacy"}:
-        days = _get_first_float(row, ("holding_days",))
-        if days is not None and np.isfinite(days) and days > 0:
-            n_days = int(max(min_days, round(float(days))))
-        else:
-            if day_count == "calendar_days":
-                n_days = _calendar_days_between(
-                    entry_d, exit_d, include_end=bool(include_exit_day)
-                )
-            else:
-                n_days = _busdays_between(entry_d, exit_d)
-            n_days = int(max(min_days, n_days))
-
-        if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
-            return pd.Series(dtype=float)
-
-        daily_cost = -(float(rate_entry) / float(basis)) * float(short_notional_entry)
-        try:
-            if day_count == "calendar_days":
-                sched = pd.date_range(entry_d, periods=n_days, freq="D")
-            else:
-                sched = pd.bdate_range(entry_d, periods=n_days, freq="B")
-        except Exception:
-            sched = pd.DatetimeIndex([])
-
-        if sched.empty and min_days > 0:
-            sched = pd.DatetimeIndex([entry_d])
-        return pd.Series([daily_cost] * len(sched), index=sched, dtype=float)
-
-    sched = _build_day_schedule(
-        entry_day=entry_d,
-        exit_day=exit_d,
+    return _compute_borrow_daily_series(
+        row,
         calendar=calendar,
-        day_count=day_count,
-        include_exit_day=bool(include_exit_day),
-        min_days=min_days,
+        price_data=price_data,
+        borrow_ctx=borrow_ctx,
     )
-    if sched.empty:
-        return pd.Series(dtype=float)
-
-    px_series = (
-        None if price_data is None else price_data.get(str(short_sym).strip().upper())
-    )
-    can_mtm = (
-        short_units_abs is not None
-        and isinstance(px_series, pd.Series)
-        and not px_series.empty
-    )
-
-    out = []
-    for d in sched:
-        rate_d = _resolve_rate(borrow_ctx, short_sym, pd.Timestamp(d))
-        if not (np.isfinite(rate_d) and rate_d > 0):
-            out.append(0.0)
-            continue
-
-        notional_d = None
-        if can_mtm:
-            px_series_t = cast(pd.Series, px_series)
-            px = _asof_price(px_series_t, pd.Timestamp(d))
-            if px is not None:
-                units_abs = int(cast(int, short_units_abs))
-                notional_d = float(abs(units_abs)) * float(px)
-
-        if notional_d is None:
-            if not (np.isfinite(short_notional_entry) and short_notional_entry > 0):
-                out.append(0.0)
-                continue
-            notional_d = float(short_notional_entry)
-
-        out.append(-(float(rate_d) / float(basis)) * float(notional_d))
-
-    return pd.Series(out, index=sched, dtype=float)
 
 
 def compute_borrow_cost_for_trades_df(
@@ -647,5 +591,4 @@ def compute_borrow_cost_for_trades_df(
     ).fillna(0.0)
 
 
-# Back-compat alias (older engine import path).
 _compute_borrow_cost_for_trade_row = compute_borrow_cost_for_trade_row

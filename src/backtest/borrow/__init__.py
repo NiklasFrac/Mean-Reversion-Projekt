@@ -1,10 +1,10 @@
 from __future__ import annotations
 
-from backtest.borrow.context import BorrowContext, _build_borrow_ctx_from_cfg
+from backtest.borrow.context import BorrowContext, build_borrow_context
 from backtest.borrow.events import generate_borrow_events
 
 __all__ = [
     "BorrowContext",
-    "_build_borrow_ctx_from_cfg",
+    "build_borrow_context",
     "generate_borrow_events",
 ]

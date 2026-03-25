@@ -10,18 +10,21 @@ The LOB mode is execution-authoritative:
 from __future__ import annotations
 
 import logging
+from dataclasses import asdict
 from collections.abc import Mapping
 from typing import Any, cast
 
 import numpy as np
 import pandas as pd
 
-from backtest.loader import select_field_from_panel
-from backtest.simulators.common import price_at_or_prior
+from backtest.config.types import AppConfig
+from backtest.runner.loader import select_field_from_panel
 from backtest.simulators.costs import compute_post_lob_costs
 from backtest.simulators.fill_model import FillModelCfg, sample_package_fill_fraction
 from backtest.simulators.liquidity_model import LiquidityModel, LiquidityModelCfg
 from backtest.simulators.orderbook_sim import OrderBook
+from backtest.utils.prices import price_at_or_prior
+from backtest.utils.tz import align_ts_to_index
 
 logger = logging.getLogger("backtest.simulators.lob")
 logger.addHandler(logging.NullHandler())
@@ -54,21 +57,9 @@ def _get(mapping: Mapping[str, Any] | None, *path: str, default: Any = None) -> 
 
 
 def _resolve_exec_lob_cfg(cfg_obj: Any) -> dict[str, Any]:
-    direct: Any = None
-    try:
-        direct = getattr(cfg_obj, "exec_lob", None)
-        if isinstance(direct, Mapping) and direct:
-            return dict(direct)
-    except Exception:
-        pass
-    raw_yaml = getattr(cfg_obj, "raw_yaml", {}) or {}
-    if isinstance(raw_yaml, Mapping):
-        ex = raw_yaml.get("execution", None)
-        if isinstance(ex, Mapping) and isinstance(ex.get("lob"), Mapping):
-            return dict(cast(Mapping[str, Any], ex.get("lob")))
-    if isinstance(direct, Mapping):
-        return dict(direct)
-    return {}
+    if not isinstance(cfg_obj, AppConfig):
+        raise TypeError("cfg_obj must be an AppConfig")
+    return asdict(cfg_obj.execution.lob)
 
 
 def _normalize_symbol(x: Any) -> str:
@@ -92,8 +83,9 @@ def _trade_units_from_row(row: pd.Series) -> tuple[int, int]:
 
 def _mk_book_params(cfg_obj: Any) -> dict[str, Any]:
     lob_cfg = _resolve_exec_lob_cfg(cfg_obj)
-    raw = getattr(cfg_obj, "raw_yaml", {}) or {}
-    seed = _safe_int(_get(raw, "seed", default=None), default=-1)
+    if not isinstance(cfg_obj, AppConfig):
+        raise TypeError("cfg_obj must be an AppConfig")
+    seed = _safe_int(cfg_obj.runtime.seed, default=-1)
     seed_val = None if seed < 0 else int(seed)
     return {
         "tick": _safe_float(lob_cfg.get("tick", 0.01), 0.01),
@@ -123,21 +115,6 @@ def _seeded_rng(seed: int | None, *parts: int) -> np.random.Generator:
     seq = [int(seed), 7919]
     seq.extend(int(p) for p in parts)
     return np.random.Generator(np.random.PCG64(np.random.SeedSequence(seq)))
-
-
-def _coerce_ts_to_index(ts: pd.Timestamp, idx: pd.DatetimeIndex) -> pd.Timestamp:
-    out = pd.Timestamp(ts)
-    tz = getattr(idx, "tz", None)
-    if tz is not None:
-        if out.tzinfo is None:
-            out = out.tz_localize(tz)
-        else:
-            out = out.tz_convert(tz)
-    elif out.tzinfo is not None:
-        out = out.tz_localize(None)
-    return out
-
-
 def _build_session_index(
     *,
     calendar: pd.DatetimeIndex | None,
@@ -176,7 +153,7 @@ def _candidate_sessions(
     if idx is None or len(idx) == 0:
         return []
     norm_idx = idx.normalize()
-    start = _coerce_ts_to_index(pd.Timestamp(start_ts), idx).normalize()
+    start = align_ts_to_index(pd.Timestamp(start_ts), idx).normalize()
     pos0 = int(norm_idx.searchsorted(start, side="left"))
     if pos0 >= len(idx):
         return []
@@ -184,7 +161,7 @@ def _candidate_sessions(
     out = list(idx[pos0:pos1])
     if cap_ts is None:
         return out
-    cap = _coerce_ts_to_index(pd.Timestamp(cap_ts), idx).normalize()
+    cap = align_ts_to_index(pd.Timestamp(cap_ts), idx).normalize()
     return [ts for ts in out if pd.Timestamp(ts).normalize() <= cap]
 
 

@@ -6,6 +6,11 @@ The backtest runner evaluates pair strategies with a **LOB** or **light** execut
 conservative windowing. It consumes artifacts from Universe, Processing, and Analysis
 and produces audit-ready outputs and reports.
 
+Architecture boundary:
+- `strat/` contains strategy-only signal and intent generation.
+- `risk/` contains risk policy plus portfolio risk runtime state.
+- `simulators/` consumes strategy and risk outputs during execution.
+
 ## Installation
 
 - Base tooling: `uv sync`
@@ -15,22 +20,22 @@ and produces audit-ready outputs and reports.
 ## Inputs
 
 Required artifacts:
-- Price panel with MultiIndex columns `(symbol, field)` (OHLCV).
-- Filtered pairs file from Analysis.
+- Processing price panel with MultiIndex columns `(symbol, field)` (OHLCV).
+- Analysis pair-selection artifact with a `pair` column.
 
 Optional artifacts:
-- ADV map for liquidity/participation sizing.
+- Processing `adv_map.pkl` for liquidity/participation sizing.
 
 Key config keys:
-- `data.prices_path`: panel path (required for LOB liquidity).
-- `data.pairs_path`: filtered pairs path.
-- `data.adv_map_path`: optional ADV map.
+- `data.prices_path`: processing panel path (`filled_prices_panel_exec.*`).
+- `data.pairs_path`: analysis pairs artifact (`*.pkl` or `*.csv` with `pair` column).
+- `data.adv_map_path`: optional processing ADV artifact (`adv_map.pkl`).
 - `data.input_mode`: `explicit` or `analysis_meta` (pins to Analysis run + freezes pairs).
 
 ## Run
 
 ```bash
-uv run --extra backtest python -m backtest.runner_backtest --cfg runs/configs/config_backtest.yaml
+uv run --extra backtest python -m backtest.runner --cfg runs/configs/config_backtest.yaml
 ```
 
 Flags:
@@ -98,14 +103,17 @@ Key components:
 - `execution.override_pnl` is removed. In `lob` mode, PnL always follows executed prices and executed dates.
 - `execution.lob.stress_model` is the first-class realism control for turbulent sessions.
 
-Calibration:
-- See `src/backtest/calibration/README.md` for method and artifacts.
-
 ## Borrow
 
 Borrow costs are computed per trade:
 - `borrow.accrual_mode` (entry notional vs mtm daily).
-- `borrow.rates`, `borrow.rate_series_by_symbol`, `borrow.availability` (optional).
+- `borrow.rates`, `borrow.availability` (optional).
+- Supported config keys are `enabled`, `accrual_mode`, `day_count`, `include_exit_day`,
+  `min_days`, `day_basis`, `default_rate_annual`, `per_asset_rate_annual`, `rates`,
+  `availability`, `enforcement`, `synthetic_jitter_sigma`, and `ftd_block_threshold`.
+- Canonical event input for borrow enforcement is `date` / `symbol` / `type`.
+- Synthetic borrow events remain available via `generate_borrow_events`, but they are an
+  explicit auxiliary path and are not discovered implicitly from environment config.
 
 ## Bayesian Optimization
 
@@ -116,26 +124,28 @@ BO is two-stage when the Markov overlay is enabled:
   resolved per-pair `z_window` for `signal.volatility_window`.
 - `spread_zscore.z_window` and `signal.max_hold_days` are fallback-only globals
   when pair half-life metadata is unavailable.
-- Stage 1 always optimizes the signal parameters via root-level keys under
-  `bo.*` such as `entry_z_range`, `exit_z_range`, `stop_z_range`,
+- The signal search optimizes the root-level `bo.*` signal ranges such as
+  `entry_z_range`, `exit_z_range`, `stop_z_range`, with budgets from
   `init_points`, `n_iter`, `patience`.
-- If `markov_filter.enabled=true`, Stage 2 optimizes
+- If `markov_filter.enabled=true`, the Markov overlay search optimizes
   `markov_filter.min_revert_prob` and `markov_filter.horizon_days` via
   `bo.min_revert_prob_range`, `bo.horizon_days_range`, plus optional
-  Stage-2 budgets `bo.markov_init_points`, `bo.markov_n_iter`,
-  `bo.markov_patience`.
-- If the Stage-2 search ranges are omitted, BO falls back to the point values
+  `bo.markov_init_points`, `bo.markov_n_iter`, `bo.markov_patience`.
+- If the Markov search ranges are omitted, BO falls back to the point values
   already configured under `markov_filter.*`.
-- Markov BO is supported only with `bo.mode=realistic`. Using
-  `markov_filter.enabled=true` together with `bo.mode=fast` raises an error.
-- Legacy `bo.stage1` / `bo.stage2` configs are no longer supported.
+- Markov BO is supported in both `bo.mode=fast` and `bo.mode=realistic`.
+- In `fast`, the Markov overlay is evaluated on the approximate simulator path.
 
-## Risk Manager
+## Risk
 
 Enable portfolio-level risk caps:
 - `risk.max_open_positions`
 - `risk.max_trade_pct`, `risk.max_gross_exposure`, `risk.max_net_exposure`
 - optional concentration caps: `risk.max_per_name_pct`, `risk.max_positions_per_symbol`
+
+The canonical implementation lives in the dedicated `backtest/risk/` subsystem:
+- `policy.py` for pure policy and sizing logic
+- `state.py` for `PortfolioRiskState` runtime admission and exposure tracking
 
 ## Reporting & Artifacts
 
@@ -143,6 +153,7 @@ Per run:
 - `config_effective.json` (resolved config after BO overrides).
 - `report/test_summary.json`, `report/test_equity.csv`, `report/test_trades.csv`.
 - `report/train_selection_summary.json`, `report/train_cv_scores.*`, `report/train_refit_equity.*`.
+- `report/train_pair_concentration.*`, `report/train_param_stability.*` for train-only research visuals.
 - `report/test_tearsheet/` with the slim OOS tear sheet.
 
 Walk-forward:
@@ -155,12 +166,6 @@ Reproducibility:
 - `inputs_provenance.json` records the resolved upstream files and hashes.
 - `config_effective.json` captures the fully resolved config after BO overrides.
 - For paper/audit work, prefer pinned upstream inputs from `runs/data/by_run/...` over mutable `runs/data/*`.
-
-## Validation / Robustness
-
-Optional checks:
-- `pit_guard` (leakage checks)
-- `overfit` (BO diagnostics)
 
 ## Quality Gates
 

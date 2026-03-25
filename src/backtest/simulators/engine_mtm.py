@@ -5,13 +5,12 @@ from typing import Any, Mapping, cast
 import numpy as np
 import pandas as pd
 
+from backtest.config.types import AppConfig
 from backtest.borrow.accrual import compute_borrow_daily_costs_for_trade_row
-from backtest.calendars import map_to_calendar as _cal_map
+from backtest.runner.calendars import map_to_calendar as _cal_map
 from backtest.simulators.performance import compute_drawdowns
-from backtest.utils.be import _infer_annualization_factor
-from backtest.utils.tz import coerce_ts_to_tz, ensure_dtindex_tz
-
-from . import engine_state as _state
+from backtest.simulators.helpers import _infer_annualization_factor
+from backtest.utils.tz import align_ts_to_index, assert_ny_series
 from .engine_trades import _get_first_present
 
 
@@ -19,7 +18,7 @@ def _map_trades_to_daily_pnl(
     trades_eval: pd.DataFrame,
     *,
     calendar: pd.DatetimeIndex,
-    cfg: Any,
+    cfg: AppConfig,
     price_data: Mapping[str, pd.Series],
     borrow_ctx: Any,
 ) -> tuple[pd.Series, pd.Series, int, int]:
@@ -28,17 +27,8 @@ def _map_trades_to_daily_pnl(
     mapped_rows = 0
     dropped = 0
     price_cache: dict[str, pd.Series | None] = {}
-    policy = str(getattr(cfg, "calendar_mapping", "prior")).lower()
-    try:
-        _raw = getattr(cfg, "raw_yaml", {}) or {}
-        strict_only = bool(
-            ((_raw.get("backtest") or {}).get("calendar") or {}).get(
-                "strict_only", False
-            )
-        )
-    except Exception:
-        strict_only = False
-    cal_tz = str(getattr(calendar, "tz", _state._EX_TZ))
+    policy = str(cfg.backtest.calendar_mapping).lower()
+    strict_only = bool(cfg.backtest.strict_calendar_only)
     borrow_enabled = False
     if borrow_ctx is not None:
         try:
@@ -56,14 +46,12 @@ def _map_trades_to_daily_pnl(
             mapped = _cal_map(ts, calendar, "nearest")
         if mapped is None:
             return None
-        mapped = coerce_ts_to_tz(mapped, cal_tz, naive_is_utc=_state._NAIVE_IS_UTC)
+        mapped = align_ts_to_index(mapped, calendar)
         if mapped not in calendar:
             fallback = _cal_map(mapped, calendar, "nearest")
             if fallback is None:
                 return None
-            mapped = coerce_ts_to_tz(
-                fallback, cal_tz, naive_is_utc=_state._NAIVE_IS_UTC
-            )
+            mapped = align_ts_to_index(fallback, calendar)
             if mapped not in calendar:
                 return None
         return mapped
@@ -79,14 +67,10 @@ def _map_trades_to_daily_pnl(
             price_cache[sym] = None
             return None
         s = pd.to_numeric(s, errors="coerce")
+        assert_ny_series(s, context=f"_map_trades_to_daily_pnl[{sym}]")
         idx = cast(pd.DatetimeIndex, s.index)
-        try:
-            idx = ensure_dtindex_tz(idx, cal_tz, naive_is_utc=_state._NAIVE_IS_UTC)
-        except Exception:
-            pass
         s = s.copy()
         s.index = idx
-        s = s.sort_index()
         s = s.reindex(calendar, method="ffill")
         price_cache[sym] = s
         return s
@@ -311,12 +295,12 @@ def _compute_equity_and_stats(
     daily_gross: pd.Series,
     *,
     calendar: pd.DatetimeIndex,
-    cfg: Any,
+    cfg: AppConfig,
     trades_eval: pd.DataFrame,
 ) -> tuple[pd.DataFrame, dict[str, Any]]:
     daily_pnl = daily_pnl.reindex(calendar).astype(float).fillna(0.0)
     equity = (
-        pd.Series(float(cfg.initial_capital), index=calendar, name="equity")
+        pd.Series(float(cfg.backtest.initial_capital), index=calendar, name="equity")
         .add(daily_pnl.cumsum(), fill_value=0.0)
         .astype(float)
     )
@@ -327,7 +311,9 @@ def _compute_equity_and_stats(
     )
     dd, max_dd, _, _ = compute_drawdowns(equity)
 
-    ann = int(cfg.annualization_factor or _infer_annualization_factor(calendar))
+    ann = int(
+        cfg.backtest.annualization_factor or _infer_annualization_factor(calendar)
+    )
     mu = float(returns.mean())
     sigma = float(returns.std(ddof=1))
     eps = 1e-12
@@ -337,7 +323,10 @@ def _compute_equity_and_stats(
     days = (calendar[-1] - calendar[0]).days if len(calendar) > 1 else 0
     years = max(1, days) / 365.25
     cagr = (
-        float((equity.iloc[-1] / float(cfg.initial_capital)) ** (1.0 / years) - 1.0)
+        float(
+            (equity.iloc[-1] / float(cfg.backtest.initial_capital)) ** (1.0 / years)
+            - 1.0
+        )
         if (np.isfinite(years) and years > 0.0)
         else 0.0
     )
@@ -347,7 +336,7 @@ def _compute_equity_and_stats(
         else 0.0
     )
 
-    dd_pct = (dd / equity.cummax().replace(0, np.nan)).fillna(0.0).astype(float)
+    dd_pct = dd.astype(float)
     stats = pd.DataFrame(
         {
             "equity": equity,

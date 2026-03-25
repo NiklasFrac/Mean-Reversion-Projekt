@@ -1,53 +1,47 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from backtest.calendars import build_trading_calendar
+from backtest.config.types import AppConfig
+from backtest.runner.calendars import build_trading_calendar
 from backtest.simulators.performance import compute_drawdowns
-from backtest.utils.tz import align_ts_to_index, to_naive_local
+from backtest.utils.tz import NY_TZ, align_ts_to_index, to_naive_local
 
-from . import engine_state as _state
 from .engine_trades import _clip_trades_to_eval_window, _normalize_trades
-from .engine_tz import (
-    _coerce_like_index,
-    _ensure_calendar_tz,
-    _to_ex_tz_series,
-    _to_ex_tz_timestamp,
-)
 
 logger = logging.getLogger("backtest")
 
 
-def _calendar_name_from_cfg(cfg: Any) -> str:
-    raw = getattr(cfg, "raw_yaml", {}) or {}
-    if isinstance(raw, Mapping):
-        data = raw.get("data")
-        if isinstance(data, Mapping):
-            name = data.get("calendar_name")
-            if isinstance(name, str) and name.strip():
-                return name.strip()
-    return "XNYS"
+def _align_datetime_series_to_index(
+    values: pd.Series,
+    idx: pd.DatetimeIndex,
+) -> pd.Series:
+    parsed = pd.to_datetime(values, errors="coerce")
+    aligned = [
+        align_ts_to_index(ts, idx) if pd.notna(ts) else pd.NaT for ts in parsed.tolist()
+    ]
+    return pd.Series(aligned, index=values.index)
+
+
+def _calendar_name_from_cfg(cfg: AppConfig) -> str:
+    return str(cfg.data.calendar_name or "XNYS")
 
 
 def _build_calendar_and_window(
     cfg: Any,
     price_data: Mapping[str, pd.Series],
-    *,
-    ex_tz: str,
 ) -> tuple[pd.DatetimeIndex, pd.Timestamp, pd.Timestamp]:
     calendar = build_trading_calendar(
         price_data, calendar_name=_calendar_name_from_cfg(cfg)
     )
-    calendar = _ensure_calendar_tz(calendar, ex_tz)
 
     e0, e1 = _resolve_eval_window(calendar, cfg)
-    e0 = _to_ex_tz_timestamp(e0, ex_tz, _state._NAIVE_IS_UTC)
-    e1 = _to_ex_tz_timestamp(e1, ex_tz, _state._NAIVE_IS_UTC)
+    e0 = align_ts_to_index(e0, calendar)
+    e1 = align_ts_to_index(e1, calendar)
 
     calendar = calendar[(calendar >= e0) & (calendar <= e1)]
     if calendar.empty:
@@ -75,7 +69,7 @@ def _collect_and_normalize_trades(
         if df is None or df.empty:
             continue
         for col in ("entry_date", "exit_date"):
-            df[col] = _coerce_like_index(df[col], calendar)
+            df[col] = _align_datetime_series_to_index(df[col], calendar)
 
         total_trades_seen += int(len(df))
         df, rep = _clip_trades_to_eval_window(df, e0=e0, e1=e1, price_data=price_data)
@@ -104,15 +98,15 @@ def _ensure_exit_after_entry(
 def _flat_equity_stats(
     calendar: pd.DatetimeIndex,
     *,
-    cfg: Any,
+    cfg: AppConfig,
     mode: str,
     e0: pd.Timestamp,
     e1: pd.Timestamp,
 ) -> pd.DataFrame:
-    eq = pd.Series(cfg.initial_capital, index=calendar, name="equity")
+    eq = pd.Series(cfg.backtest.initial_capital, index=calendar, name="equity")
     returns = eq.pct_change().fillna(0.0)
     dd, max_dd, _, _ = compute_drawdowns(eq)
-    dd_pct = (dd / eq.cummax().replace(0, np.nan)).fillna(0.0).astype(float)
+    dd_pct = dd.astype(float)
     stats = pd.DataFrame(
         {"equity": eq, "returns": returns, "drawdown": dd, "drawdown_pct": dd_pct}
     )
@@ -136,7 +130,7 @@ def _flat_equity_stats(
             "mapped_trades": 0,
             "calendar_name": _calendar_name_from_cfg(cfg),
             "calendar_source": "exchange_calendars",
-            "exec_mode": cfg.exec_mode,
+            "exec_mode": cfg.execution.mode,
             "exec_rejected_count": 0,
         }
     )
@@ -146,40 +140,33 @@ def _flat_equity_stats(
 def _select_eval_trades(
     trades_df: pd.DataFrame, *, e0: pd.Timestamp, e1: pd.Timestamp
 ) -> pd.DataFrame:
-    try:
-        trades_df["entry_date"] = _to_ex_tz_series(
-            trades_df["entry_date"], _state._EX_TZ, _state._NAIVE_IS_UTC
-        )
-        trades_df["exit_date"] = _to_ex_tz_series(
-            trades_df["exit_date"], _state._EX_TZ, _state._NAIVE_IS_UTC
-        )
-    except Exception as _tz_e:
-        logger.warning("TZ coercion failed (entry/exit): %s", _tz_e)
-    _e0 = _to_ex_tz_timestamp(e0, _state._EX_TZ, _state._NAIVE_IS_UTC)
-    _e1 = _to_ex_tz_timestamp(e1, _state._EX_TZ, _state._NAIVE_IS_UTC)
-
-    return trades_df[
-        (trades_df["exit_date"] >= _e0) & (trades_df["exit_date"] <= _e1)
-    ].copy()
+    out = trades_df.copy()
+    out["entry_date"] = pd.to_datetime(out["entry_date"], errors="coerce")
+    out["exit_date"] = pd.to_datetime(out["exit_date"], errors="coerce")
+    if isinstance(out["exit_date"].dtype, pd.DatetimeTZDtype):
+        ref_idx = pd.DatetimeIndex([pd.Timestamp(e0), pd.Timestamp(e1)], tz=NY_TZ)
+        out["entry_date"] = _align_datetime_series_to_index(out["entry_date"], ref_idx)
+        out["exit_date"] = _align_datetime_series_to_index(out["exit_date"], ref_idx)
+        e0 = align_ts_to_index(e0, ref_idx)
+        e1 = align_ts_to_index(e1, ref_idx)
+    return out[(out["exit_date"] >= e0) & (out["exit_date"] <= e1)].copy()
 
 
 def _resolve_eval_window(
-    calendar: pd.DatetimeIndex, cfg: Any
+    calendar: pd.DatetimeIndex, cfg: AppConfig
 ) -> tuple[pd.Timestamp, pd.Timestamp]:
-    # Conservative-only: windows are defined by `cfg.splits`.
-    if not cfg.splits or "test" not in cfg.splits:
+    splits = cfg.backtest.splits
+    if not splits or "test" not in splits:
         raise KeyError(
-            "BacktestConfig.splits['test'] missing (conservative mode required)"
+            "backtest.splits['test'] missing (conservative mode required)"
         )
 
-    e0 = pd.to_datetime(cfg.splits["test"]["start"])
-    e1 = pd.to_datetime(cfg.splits["test"]["end"])
+    e0 = pd.to_datetime(splits["test"].start)
+    e1 = pd.to_datetime(splits["test"].end)
 
     def _chk(k: str) -> tuple[pd.Timestamp, pd.Timestamp] | None:
-        if cfg.splits and k in cfg.splits:
-            return pd.to_datetime(cfg.splits[k]["start"]), pd.to_datetime(
-                cfg.splits[k]["end"]
-            )
+        if splits and k in splits:
+            return pd.to_datetime(splits[k].start), pd.to_datetime(splits[k].end)
         return None
 
     a = _chk("analysis")

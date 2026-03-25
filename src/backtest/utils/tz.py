@@ -1,74 +1,33 @@
-"""Timezone utilities for Pandas objects (Series/DataFrame/Index/Timestamp).
-
-Project policy:
-- Primary exchange timezone: "America/New_York" (NY_TZ).
-- naive_is_utc = False.
-- Never use tz_convert(None); to drop tz, use tz_localize(None).
-"""
+"""Timezone SSOT for backtest runtime contracts and boundary alignment."""
 
 from __future__ import annotations
 
 import datetime as dt
-import logging
-import os
-from collections.abc import Mapping, Sequence
-from typing import Any, Literal, TypeAlias
+from typing import Any
 
-import numpy as np
 import pandas as pd
-from numpy.typing import NDArray
 
 __all__ = [
     "NY_TZ",
-    "NAIVE_IS_UTC",
-    "get_naive_is_utc",
-    "get_ex_tz",
     "utc_now",
-    "ensure_dtindex_tz",
-    "ensure_index_tz",
+    "assert_ny_index",
+    "assert_ny_series",
+    "assert_ny_frame",
+    "to_ny_timestamp",
+    "to_ny_index",
+    "to_ny_series",
     "align_ts_to_series",
     "align_ts_to_index",
-    "coerce_ts_to_tz",
-    "coerce_series_to_tz",
-    "coerce_series_like_index",
+    "align_index_to_index",
     "to_naive_local",
-    "to_naive_utc",
     "to_naive_day",
     "same_tz_or_raise",
 ]
 
 NY_TZ = "America/New_York"
-logger = logging.getLogger(__name__)
-NAIVE_IS_UTC: bool = str(os.getenv("WF_NAIVE_IS_UTC", "0")).strip().lower() in {
-    "1",
-    "true",
-    "yes",
-    "on",
-}
-
-# ---- typing helpers for tz_localize signatures --------------------------------
-
-# DatetimeIndex.tz_localize:
-#   nonexistent: Literal[...] | Timedelta
-#   ambiguous:   Literal['infer','NaT','raise'] | ndarray[bool]
-NonexistentParam: TypeAlias = (
-    Literal["shift_forward", "shift_backward", "NaT", "raise"]
-    | pd.Timedelta
-    | dt.timedelta
-)
-AmbiguousIdxParam: TypeAlias = Literal["infer", "NaT", "raise"] | NDArray[np.bool_]
-
-# Timestamp.tz_localize:
-#   nonexistent: Literal[...] | Timedelta
-#   ambiguous:   Literal['raise','NaT'] | bool
-AmbiguousTsParam: TypeAlias = Literal["raise", "NaT"] | bool
-
-
-# ---- internals -----------------------------------------------------------------
 
 
 def _tz_to_str(tz: Any) -> str | None:
-    """Return IANA tz name if available, else None."""
     if tz is None:
         return None
     for attr in ("key", "zone"):
@@ -79,328 +38,180 @@ def _tz_to_str(tz: Any) -> str | None:
     return s if s and s.lower() != "none" else None
 
 
-def _extract_tz_from_index_like(obj: Any) -> str | None:
-    """Try to extract tz name from DatetimeIndex/Series/Timestamp; None if naive."""
-    try:
-        if isinstance(obj, pd.DatetimeIndex):
-            return _tz_to_str(obj.tz)
-        if isinstance(obj, pd.Series):
-            if hasattr(obj, "dt"):
-                return _tz_to_str(getattr(obj.dt, "tz", None))
-        ts = pd.Timestamp(obj)
-        return _tz_to_str(ts.tz)
-    except Exception:
-        return None
-
-
-def _get_nested(mapping: Mapping[str, Any], path: Sequence[str]) -> Any:
-    """Safe nested dict access; returns None when missing."""
-    cur: Any = mapping
-    for key in path:
-        if not isinstance(cur, Mapping) or key not in cur:
-            return None
-        cur = cur[key]
-    return cur
-
-
 def _normalize_tz_name(name: str | None) -> str | None:
-    """Normalize common timezone aliases to IANA names."""
     if not name:
         return None
     aliases = {
         "US/Eastern": NY_TZ,
-        "EST": NY_TZ,  # offset aliases normalized to IANA
+        "EST": NY_TZ,
         "EDT": NY_TZ,
         "America/NewYork": NY_TZ,
     }
     return aliases.get(name, name)
 
 
-def _infer_utc_hint(
-    values: pd.Series | pd.Index | Sequence[Any], *, sample_size: int = 200
-) -> bool:
-    """
-    Best-effort detector for timezone-aware string payloads.
-    Returns True when sampled values look like they carry explicit UTC/offset suffixes.
-    """
+def _extract_tz_from_index_like(obj: Any) -> str | None:
     try:
-        s = values if isinstance(values, pd.Series) else pd.Series(values)
-        sample = pd.Series(s).dropna().astype(str).head(max(1, int(sample_size)))
-        if sample.empty:
-            return False
-        return bool(sample.str.contains(r"(?:Z|[+-]\d{2}:?\d{2})$", regex=True).any())
+        if isinstance(obj, pd.DatetimeIndex):
+            return _normalize_tz_name(_tz_to_str(obj.tz))
+        if isinstance(obj, pd.Series) and hasattr(obj, "dt"):
+            return _normalize_tz_name(_tz_to_str(getattr(obj.dt, "tz", None)))
+        ts = pd.Timestamp(obj)
+        return _normalize_tz_name(_tz_to_str(ts.tz))
     except Exception:
-        return False
+        return None
 
 
-# ---- public API ----------------------------------------------------------------
+def _context_suffix(context: str) -> str:
+    return f" ({context})" if context else ""
+
+
+def _localize_or_convert_timestamp(
+    ts: pd.Timestamp | str | dt.datetime,
+    tz_name: str,
+) -> pd.Timestamp:
+    out = pd.Timestamp(ts)
+    if pd.isna(out):
+        return pd.NaT  # type: ignore[return-value]
+    if out.tzinfo is None:
+        return out.tz_localize(tz_name)
+    return out.tz_convert(tz_name)
 
 
 def utc_now() -> dt.datetime:
-    """UTC-aware current timestamp."""
     return dt.datetime.now(dt.timezone.utc)
 
 
-def get_naive_is_utc() -> bool:
-    """Return the env-configured naive_is_utc policy."""
-    return bool(NAIVE_IS_UTC)
+def to_ny_timestamp(ts: pd.Timestamp | str | dt.datetime) -> pd.Timestamp:
+    return _localize_or_convert_timestamp(ts, NY_TZ)
 
 
-def get_ex_tz(
-    cfg: Mapping[str, Any],
-    prices: pd.Series | pd.DataFrame | None = None,
-    default: str = NY_TZ,
-) -> str:
-    """Derive exchange timezone from env/cfg/prices, fallback to default."""
-    env_tz = os.getenv("WF_EXCHANGE_TZ")
-    if env_tz:
-        norm = _normalize_tz_name(env_tz)
-        if norm:
-            return norm
-
-    for path in (
-        ["backtest", "timezone"],
-        ["time", "timezone"],
-        ["determinism", "timezone"],
-        ["data", "timezone"],
-        ["backtest", "calendar", "tz"],
-        ["backtest", "calendars", "tz"],
-        ["venues", "XNYS", "tz"],
-    ):
-        val = _get_nested(cfg, path)
-        if isinstance(val, str) and val.strip():
-            norm = _normalize_tz_name(val.strip())
-            if norm:
-                return norm
-
-    if prices is not None:
-        idx = (
-            prices.index
-            if isinstance(prices, pd.DataFrame)
-            else getattr(prices, "index", None)
-        )
-        if isinstance(idx, pd.DatetimeIndex):
-            tzs = _tz_to_str(idx.tz)
-            if tzs:
-                return tzs
-
-    return default
+def to_ny_index(idx: pd.DatetimeIndex | Any) -> pd.DatetimeIndex:
+    out = pd.DatetimeIndex(pd.to_datetime(idx, errors="coerce"))
+    if out.tz is None:
+        return out.tz_localize(NY_TZ)
+    return out.tz_convert(NY_TZ)
 
 
-def ensure_index_tz(
-    obj: pd.Series | pd.DataFrame,
-    tz: str,
-    *,
-    inplace: bool = False,
-    nonexistent: NonexistentParam = "shift_forward",
-    ambiguous: AmbiguousIdxParam = "NaT",
-) -> pd.Series | pd.DataFrame:
-    """Ensure Series/DataFrame index is in target tz (localize or convert)."""
-    if not isinstance(obj.index, pd.DatetimeIndex):
-        return obj if inplace else obj.copy()
-
-    idx: pd.DatetimeIndex = obj.index
-    target = _normalize_tz_name(tz) or tz
-
-    if idx.tz is None:
-        new_idx = idx.tz_localize(target, nonexistent=nonexistent, ambiguous=ambiguous)
-    else:
-        cur = _tz_to_str(idx.tz)
-        if cur == target:
-            return obj
-        new_idx = idx.tz_convert(target)
-
-    if inplace:
-        obj.index = new_idx
-        return obj
-    out = obj.copy()
-    out.index = new_idx
-    return out
+def to_ny_series(values: pd.Series | Any) -> pd.Series:
+    out = pd.to_datetime(values, errors="coerce")
+    if isinstance(out, pd.Series):
+        if isinstance(out.dtype, pd.DatetimeTZDtype):
+            return out.dt.tz_convert(NY_TZ)
+        return out.dt.tz_localize(NY_TZ)
+    series = pd.Series(out)
+    if isinstance(series.dtype, pd.DatetimeTZDtype):
+        return series.dt.tz_convert(NY_TZ)
+    return series.dt.tz_localize(NY_TZ)
 
 
-def ensure_dtindex_tz(
+def assert_ny_index(
     idx: pd.DatetimeIndex,
-    tz: str,
     *,
-    naive_is_utc: bool | None = None,
-    nonexistent: NonexistentParam = "shift_forward",
-    ambiguous: AmbiguousIdxParam = "NaT",
+    context: str = "",
 ) -> pd.DatetimeIndex:
-    """Ensure a DatetimeIndex is in target tz (localize or convert)."""
-    target = _normalize_tz_name(tz) or tz
-    if idx.tz is None:
-        if bool(naive_is_utc):
-            return idx.tz_localize("UTC").tz_convert(target)
-        return idx.tz_localize(target, nonexistent=nonexistent, ambiguous=ambiguous)
-    cur = _tz_to_str(idx.tz)
-    if cur == target:
-        return idx
-    return idx.tz_convert(target)
+    suffix = _context_suffix(context)
+    if not isinstance(idx, pd.DatetimeIndex):
+        raise ValueError(f"Expected DatetimeIndex{suffix}.")
+    if bool(idx.isna().any()):
+        raise ValueError(f"DatetimeIndex contains NaT values{suffix}.")
+    tz_name = _normalize_tz_name(_tz_to_str(idx.tz))
+    if tz_name is None:
+        raise ValueError(
+            f"DatetimeIndex must be tz-aware in {NY_TZ}, got tz-naive index{suffix}."
+        )
+    if tz_name != NY_TZ:
+        raise ValueError(
+            f"DatetimeIndex must use {NY_TZ}, got {tz_name!r}{suffix}."
+        )
+    if not idx.is_monotonic_increasing:
+        raise ValueError(f"DatetimeIndex must be sorted ascending{suffix}.")
+    if bool(idx.has_duplicates):
+        raise ValueError(f"DatetimeIndex must not contain duplicates{suffix}.")
+    return idx
 
 
-def coerce_ts_to_tz(
-    ts: pd.Timestamp | str | dt.datetime,
-    tz: str,
+def assert_ny_series(
+    series: pd.Series,
     *,
-    naive_is_utc: bool | None = None,
-    nonexistent: NonexistentParam = "shift_forward",
-    ambiguous: AmbiguousTsParam = "NaT",
-) -> pd.Timestamp:
-    """Convert or localize a single timestamp to target tz."""
-    t = pd.to_datetime(ts, errors="coerce")
-    if pd.isna(t):
-        return pd.NaT  # type: ignore[return-value]
-    target = _normalize_tz_name(tz) or tz
-    t_tz = _tz_to_str(getattr(t, "tz", None))
-    if t_tz is None:
-        if bool(naive_is_utc):
-            return t.tz_localize("UTC").tz_convert(target)
-        return t.tz_localize(target, nonexistent=nonexistent, ambiguous=ambiguous)
-    if t_tz != target:
-        return t.tz_convert(target)
-    return t
-
-
-def coerce_series_to_tz(
-    s: pd.Series,
-    tz: str,
-    *,
-    naive_is_utc: bool | None = None,
-    utc_hint: bool | Literal["auto"] = False,
-    errors: Literal["raise", "coerce"] = "coerce",
+    context: str = "",
 ) -> pd.Series:
-    """
-    Convert/localize a datetime Series to target tz.
+    if not isinstance(series, pd.Series):
+        raise ValueError(f"Expected Series{_context_suffix(context)}.")
+    assert_ny_index(series.index, context=context)
+    return series
 
-    `utc_hint="auto"` infers whether parsing should force UTC (useful for
-    mixed timezone-aware string payloads).
-    """
-    utc_flag = _infer_utc_hint(s) if utc_hint == "auto" else bool(utc_hint)
-    s2 = pd.to_datetime(s, errors=errors, utc=utc_flag)
-    if s2.empty:
-        return s2
-    target = _normalize_tz_name(tz) or tz
-    cur_tz = _tz_to_str(getattr(getattr(s2, "dt", None), "tz", None))
-    if cur_tz is None:
-        if bool(naive_is_utc):
-            return s2.dt.tz_localize("UTC").dt.tz_convert(target)
-        return s2.dt.tz_localize(target)
-    if cur_tz != target:
-        return s2.dt.tz_convert(target)
-    return s2
+
+def assert_ny_frame(
+    frame: pd.DataFrame,
+    *,
+    context: str = "",
+) -> pd.DataFrame:
+    if not isinstance(frame, pd.DataFrame):
+        raise ValueError(f"Expected DataFrame{_context_suffix(context)}.")
+    assert_ny_index(frame.index, context=context)
+    return frame
 
 
 def align_ts_to_series(
     ts: pd.Timestamp | str | dt.datetime,
     ser: pd.Series,
-    *,
-    naive_is_utc: bool | None = None,
-    nonexistent: NonexistentParam = "shift_forward",
-    ambiguous: AmbiguousTsParam = "NaT",
 ) -> pd.Timestamp:
-    """Align single timestamp to the timezone semantics of a Series."""
     s_tz: str | None = None
-    # prefer tz of datetime-like values
     if hasattr(ser, "dt"):
         try:
-            s_tz = _tz_to_str(getattr(ser.dt, "tz", None))
+            s_tz = _normalize_tz_name(_tz_to_str(getattr(ser.dt, "tz", None)))
         except Exception:
             s_tz = None
-    # fallback: tz from DatetimeIndex (common for numeric values)
     if s_tz is None and isinstance(ser.index, pd.DatetimeIndex):
-        s_tz = _tz_to_str(ser.index.tz)
+        s_tz = _normalize_tz_name(_tz_to_str(ser.index.tz))
 
-    t = pd.Timestamp(ts)
-    t_tz = _tz_to_str(t.tz)
-
+    out = pd.Timestamp(ts)
+    if pd.isna(out):
+        return pd.NaT  # type: ignore[return-value]
     if s_tz is not None:
-        if t_tz is None:
-            if bool(naive_is_utc):
-                return t.tz_localize("UTC").tz_convert(s_tz)
-            return t.tz_localize(s_tz, nonexistent=nonexistent, ambiguous=ambiguous)
-        if t_tz != s_tz:
-            return t.tz_convert(s_tz)
-        return t
-
-    # series is naive → drop tz on aware timestamp
-    if t_tz is not None:
-        return t.tz_localize(None)
-    return t
+        return _localize_or_convert_timestamp(out, s_tz)
+    return out.tz_localize(None) if out.tzinfo is not None else out
 
 
 def align_ts_to_index(
     ts: pd.Timestamp | str | dt.datetime,
     idx: pd.DatetimeIndex,
-    *,
-    naive_is_utc: bool | None = None,
-    nonexistent: NonexistentParam = "shift_forward",
-    ambiguous: AmbiguousTsParam = "NaT",
 ) -> pd.Timestamp:
-    """Align single timestamp to the timezone semantics of a DatetimeIndex."""
-    t = pd.Timestamp(ts)
-    if not isinstance(idx, pd.DatetimeIndex):
-        return t
-    idx_tz = _tz_to_str(idx.tz)
-    t_tz = _tz_to_str(t.tz)
+    out = pd.Timestamp(ts)
+    if pd.isna(out) or not isinstance(idx, pd.DatetimeIndex):
+        return out
+    idx_tz = _normalize_tz_name(_tz_to_str(idx.tz))
     if idx_tz is None:
-        return t.tz_localize(None) if t_tz is not None else t
-    if t_tz is None:
-        if bool(naive_is_utc):
-            return t.tz_localize("UTC").tz_convert(idx_tz)
-        return t.tz_localize(idx_tz, nonexistent=nonexistent, ambiguous=ambiguous)
-    if t_tz != idx_tz:
-        return t.tz_convert(idx_tz)
-    return t
+        return out.tz_localize(None) if out.tzinfo is not None else out
+    return _localize_or_convert_timestamp(out, idx_tz)
 
 
-def coerce_series_like_index(
-    dt_series: pd.Series,
-    idx: pd.DatetimeIndex,
-    *,
-    naive_is_utc: bool | None = None,
-) -> pd.Series:
-    """
-    Coerce a datetime-like Series to match an index tz; normalize if index is daily.
-    """
-    s = pd.to_datetime(dt_series, errors="coerce")
-    if s.empty:
-        return s
-    tz_idx = _tz_to_str(getattr(idx, "tz", None))
-    tz_s = _tz_to_str(getattr(getattr(s, "dt", None), "tz", None))
-
-    if tz_idx is None:
-        if tz_s is not None:
-            s = s.dt.tz_localize(None)
-    else:
-        if tz_s is None:
-            if bool(naive_is_utc):
-                s = s.dt.tz_localize("UTC").dt.tz_convert(tz_idx)
-            else:
-                s = s.dt.tz_localize(tz_idx)
-        else:
-            s = s.dt.tz_convert(tz_idx)
-
-    try:
-        has_time = any(getattr(ts, "hour", 0) != 0 for ts in idx[:64])
-    except Exception:
-        has_time = False
-    if not has_time:
-        s = s.dt.normalize()
-    return s
+def align_index_to_index(
+    idx: pd.DatetimeIndex | Any,
+    ref_idx: pd.DatetimeIndex,
+) -> pd.DatetimeIndex:
+    out = pd.DatetimeIndex(pd.to_datetime(idx, errors="coerce"))
+    if not isinstance(ref_idx, pd.DatetimeIndex):
+        return out
+    ref_tz = _normalize_tz_name(_tz_to_str(ref_idx.tz))
+    if ref_tz is None:
+        return out.tz_localize(None) if out.tz is not None else out
+    if out.tz is None:
+        return out.tz_localize(ref_tz)
+    return out.tz_convert(ref_tz)
 
 
 def to_naive_local(obj: Any) -> Any:
-    """Drop tz locally (wall-clock) for Timestamp/Index/Series/DataFrame."""
     if isinstance(obj, pd.Timestamp):
         return obj.tz_localize(None) if obj.tz is not None else obj
     if isinstance(obj, pd.DatetimeIndex):
         return obj.tz_localize(None) if obj.tz is not None else obj
     if isinstance(obj, pd.Series):
         try:
-            if hasattr(obj, "dt"):
-                tz = _tz_to_str(getattr(obj.dt, "tz", None))
-                if tz is not None:
-                    return obj.dt.tz_localize(None)
+            tz_name = _extract_tz_from_index_like(obj)
+            if tz_name is not None and hasattr(obj, "dt"):
+                return obj.dt.tz_localize(None)
         except Exception:
             pass
         return obj
@@ -412,35 +223,7 @@ def to_naive_local(obj: Any) -> Any:
     return obj
 
 
-def to_naive_utc(obj: Any) -> Any:
-    """Convert tz-aware values to UTC, then drop tz (naive)."""
-    if isinstance(obj, pd.Timestamp):
-        if obj.tz is not None:
-            return obj.tz_convert("UTC").tz_localize(None)
-        return obj
-    if isinstance(obj, pd.DatetimeIndex):
-        if obj.tz is not None:
-            return obj.tz_convert("UTC").tz_localize(None)
-        return obj
-    if isinstance(obj, pd.Series):
-        try:
-            if hasattr(obj, "dt"):
-                tz = _tz_to_str(getattr(obj.dt, "tz", None))
-                if tz is not None:
-                    return obj.dt.tz_convert("UTC").dt.tz_localize(None)
-        except Exception:
-            pass
-        return obj
-    if isinstance(obj, pd.DataFrame):
-        out = obj.copy()
-        if isinstance(out.index, pd.DatetimeIndex) and out.index.tz is not None:
-            out.index = out.index.tz_convert("UTC").tz_localize(None)
-        return out
-    return obj
-
-
 def to_naive_day(obj: Any) -> Any:
-    """Drop tz locally and normalize to day boundary when applicable."""
     out = to_naive_local(obj)
     if isinstance(out, pd.Timestamp):
         return out.normalize()
@@ -468,7 +251,6 @@ def same_tz_or_raise(
     allow_naive_pair: bool = False,
     context: str = "",
 ) -> None:
-    """Validate tz compatibility; raise on mismatch."""
     tz1 = _extract_tz_from_index_like(idx1)
     tz2 = _extract_tz_from_index_like(idx2)
 
@@ -478,25 +260,9 @@ def same_tz_or_raise(
         if allow_naive_pair:
             return
         raise ValueError(
-            f"Both operands are tz-naive (context={context!r}). "
-            "Localize one side or allow_naive_pair=True."
+            f"Both operands are tz-naive{_context_suffix(context)}."
         )
     raise ValueError(
         "Incompatible timezones: "
-        f"left={tz1!r}, right={tz2!r}, context={context!r}. "
-        "Localize/convert before comparing."
+        f"left={tz1!r}, right={tz2!r}{_context_suffix(context)}."
     )
-
-
-if __name__ == "__main__":  # pragma: no cover
-    # minimal self-checks
-    logging.basicConfig(level=logging.INFO)
-    s = pd.Series([1, 2, 3], index=pd.date_range("2024-01-01", periods=3, freq="D"))
-    s_ny = ensure_index_tz(s, NY_TZ)
-    assert _extract_tz_from_index_like(s_ny.index) == NY_TZ
-    t = align_ts_to_series(pd.Timestamp("2024-01-02"), s_ny)
-    assert _tz_to_str(t.tz) == NY_TZ
-    same_tz_or_raise(s_ny.index, t, allow_naive_pair=False, context="debug")
-    s_naive = to_naive_local(s_ny)
-    assert isinstance(s_naive.index, pd.DatetimeIndex) and s_naive.index.tz is None
-    logger.info("tz_utils self-checks passed.")

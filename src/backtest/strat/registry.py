@@ -1,56 +1,40 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
+from backtest.config.cfg import AppConfig, config_to_dict
 from backtest.strat.baseline import BaselineZScoreStrategy
 
-_STRATEGY_REGISTRY: dict[str, type] = {
-    "baseline": BaselineZScoreStrategy,
-    "BaselineZScoreStrategy": BaselineZScoreStrategy,
+_STRATEGY_TYPES: dict[str, type[BaselineZScoreStrategy]] = {
+    "baseline": BaselineZScoreStrategy
 }
 
 
-def list_strategy_keys() -> list[str]:
-    """Return canonical registry keys (lowercase)."""
-    return sorted({k for k in _STRATEGY_REGISTRY.keys() if k == k.lower()})
-
-
-def get_strategy_cls(name: str | None) -> type:
-    """Resolve a strategy class from the registry (case-insensitive)."""
-    norm = str(name or "baseline").strip()
-    key = norm.lower()
-    cls = _STRATEGY_REGISTRY.get(key) or _STRATEGY_REGISTRY.get(norm)
+def _resolve_strategy_cls(name: str | None) -> type[BaselineZScoreStrategy]:
+    key = str(name or "baseline").strip().lower()
+    cls = _STRATEGY_TYPES.get(key)
     if cls is None:
-        keys = list_strategy_keys()
-        raise KeyError(f"Unknown strategy.name={norm!r}. Available: {keys}")
+        raise KeyError(
+            f"Unknown strategy.name={name!r}. Available: {sorted(_STRATEGY_TYPES)}"
+        )
     return cls
 
 
-def build_strategy_instance(
-    cfg: dict[str, Any],
-    *,
-    borrow_ctx: Any,
-    params: dict[str, Any] | None = None,
-    name: str | None = None,
-) -> Any:
-    """Construct a strategy instance from cfg and optional explicit name/params."""
-    scfg = cfg.get("strategy", {}) if isinstance(cfg.get("strategy"), dict) else {}
-    resolved_name = name if name is not None else scfg.get("name")
-    cls = get_strategy_cls(resolved_name)
-    params_eff = (
-        params
-        if params is not None
-        else (scfg.get("params", {}) if isinstance(scfg.get("params"), dict) else {})
+def build_strategy_from_cfg(cfg: dict[str, Any] | AppConfig) -> Any:
+    cfg_dict = config_to_dict(cfg) if isinstance(cfg, AppConfig) else cfg
+    scfg = (
+        cfg_dict.get("strategy", {})
+        if isinstance(cfg_dict.get("strategy"), dict)
+        else {}
     )
+    name = scfg.get("name")
+    params = scfg.get("params", {}) if isinstance(scfg.get("params"), dict) else {}
+    cls = _resolve_strategy_cls(cast(str | None, name))
     try:
-        return (
-            cls(cfg, borrow_ctx=borrow_ctx, **params_eff)
-            if params_eff
-            else cls(cfg, borrow_ctx=borrow_ctx)
-        )
+        return cls(cfg_dict, **params) if params else cls(cfg_dict)
     except TypeError as e:
-        if params_eff:
+        if params:
             raise TypeError(
-                f"Strategy {resolved_name!r} does not accept strategy.params={list(params_eff.keys())}"
+                f"Strategy {name!r} does not accept strategy.params={list(params.keys())}"
             ) from e
         raise

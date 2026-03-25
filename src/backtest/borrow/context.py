@@ -7,6 +7,7 @@ from typing import Any, Mapping
 import numpy as np
 import pandas as pd
 
+from backtest.config.types import BorrowAvailabilityPoint, BorrowConfig, BorrowRatePoint
 from backtest.utils.tz import to_naive_day
 
 logger = logging.getLogger("backtest.borrow")
@@ -22,17 +23,9 @@ def _coerce_date(x: Any) -> pd.Timestamp | None:
     return to_naive_day(t)
 
 
-def _find_col(lc: dict[str, str], *cands: str) -> str | None:
-    for c in cands:
-        key = str(c).lower()
-        if key in lc:
-            return lc[key]
-    return None
-
-
 def _parse_per_asset_rates_any(obj: Any) -> dict[str, float]:
     """
-    Parse per-asset borrow rates from inline YAML data.
+    Parse canonical per-asset borrow rates from config data.
 
     Supported:
       - Mapping: {SYMBOL: rate_annual, ...}
@@ -60,19 +53,11 @@ def _parse_per_asset_rates_any(obj: Any) -> dict[str, float]:
         for row in obj:
             if not isinstance(row, Mapping):
                 continue
-            sym = (
-                str(row.get("symbol") or row.get("ticker") or row.get("asset") or "")
-                .strip()
-                .upper()
-            )
+            sym = str(row.get("symbol") or "").strip().upper()
             if not sym:
                 continue
             try:
-                val = float(
-                    pd.to_numeric(
-                        row.get("rate_annual", row.get("rate")), errors="coerce"
-                    )
-                )
+                val = float(pd.to_numeric(row.get("rate_annual"), errors="coerce"))
             except Exception:
                 continue
             if np.isfinite(val) and val >= 0:
@@ -84,7 +69,7 @@ def _parse_per_asset_rates_any(obj: Any) -> dict[str, float]:
 
 def _parse_rate_series_by_symbol_any(obj: Any) -> dict[str, pd.Series]:
     """
-    Parse per-symbol time series from inline YAML data.
+    Parse canonical per-symbol borrow rate series from config data.
 
     Supported:
       - Mapping: {SYMBOL: {date: rate, ...}, ...}
@@ -113,27 +98,15 @@ def _parse_rate_series_by_symbol_any(obj: Any) -> dict[str, pd.Series]:
         df = pd.DataFrame(rows)
         if df.empty:
             return {}
-        df.columns = [str(c) for c in df.columns]
-        lc = {c.lower(): c for c in df.columns}
-        date_col = _find_col(lc, "date", "day", "ts", "timestamp", "datetime")
-        sym_col = _find_col(lc, "symbol", "ticker", "asset", "secid")
-        rate_col = _find_col(
-            lc,
-            "rate_annual",
-            "rate",
-            "borrow_rate",
-            "annual_rate",
-            "borrow_rate_annual",
-        )
-        if not (date_col and sym_col and rate_col):
+        if not {"date", "symbol", "rate_annual"}.issubset(df.columns):
             return {}
-        tmp = df[[date_col, sym_col, rate_col]].copy()
-        tmp[date_col] = to_naive_day(pd.to_datetime(tmp[date_col], errors="coerce"))
-        tmp[sym_col] = tmp[sym_col].astype(str).str.strip().str.upper()
-        tmp[rate_col] = pd.to_numeric(tmp[rate_col], errors="coerce")
-        tmp = tmp.dropna(subset=[date_col, sym_col, rate_col])
-        for sym, sub in tmp.groupby(sym_col, sort=False):
-            s = _norm_series(sub[date_col].tolist(), sub[rate_col].tolist())
+        tmp = df[["date", "symbol", "rate_annual"]].copy()
+        tmp["date"] = to_naive_day(pd.to_datetime(tmp["date"], errors="coerce"))
+        tmp["symbol"] = tmp["symbol"].astype(str).str.strip().str.upper()
+        tmp["rate_annual"] = pd.to_numeric(tmp["rate_annual"], errors="coerce")
+        tmp = tmp.dropna(subset=["date", "symbol", "rate_annual"])
+        for sym, sub in tmp.groupby("symbol", sort=False):
+            s = _norm_series(sub["date"].tolist(), sub["rate_annual"].tolist())
             if not s.empty:
                 out[str(sym)] = s
         return out
@@ -157,11 +130,8 @@ def _parse_rate_series_by_symbol_any(obj: Any) -> dict[str, pd.Series]:
                 vals: list[Any] = []
                 for row in v:
                     if isinstance(row, Mapping):
-                        dates.append(row.get("date", row.get("day", row.get("ts"))))
-                        vals.append(row.get("rate_annual", row.get("rate")))
-                    elif isinstance(row, (list, tuple)) and len(row) >= 2:
-                        dates.append(row[0])
-                        vals.append(row[1])
+                        dates.append(row.get("date"))
+                        vals.append(row.get("rate_annual"))
                 s = _norm_series(dates, vals)
                 if not s.empty:
                     out[sym] = s
@@ -174,10 +144,9 @@ def _parse_rate_series_by_symbol_any(obj: Any) -> dict[str, pd.Series]:
 
 def _parse_availability_long_any(obj: Any) -> pd.DataFrame | None:
     """
-    Parse availability data from inline YAML.
+    Parse canonical availability data from config data.
 
-    Expected (preferred): List[{"date": "...", "symbol": "...", "available": 0/1}, ...]
-    Also supports a DataFrame-like list of dicts with flexible column names.
+    Expected: List[{"date": "...", "symbol": "...", "available": 0/1}, ...]
     """
     if obj is None:
         return None
@@ -192,26 +161,9 @@ def _parse_availability_long_any(obj: Any) -> pd.DataFrame | None:
         return None
     if df.empty:
         return None
-    df.columns = [str(c) for c in df.columns]
-    lc = {c.lower(): c for c in df.columns}
-    date_col = _find_col(lc, "date", "day", "dt", "ts", "timestamp", "datetime")
-    sym_col = _find_col(lc, "symbol", "ticker", "asset", "secid")
-    av_col = _find_col(
-        lc,
-        "available",
-        "avail",
-        "is_available",
-        "borrowable",
-        "availability",
-        "locates",
-        "locates_available",
-        "shares_available",
-        "borrow_avail",
-    )
-    if not (date_col and sym_col and av_col):
+    if not {"date", "symbol", "available"}.issubset(df.columns):
         return None
-    out = df[[date_col, sym_col, av_col]].copy()
-    out = out.rename(columns={date_col: "date", sym_col: "symbol", av_col: "available"})
+    out = df[["date", "symbol", "available"]].copy()
     out["date"] = to_naive_day(pd.to_datetime(out["date"], errors="coerce"))
     out = out.dropna(subset=["date", "symbol"])
     out["symbol"] = out["symbol"].astype(str).str.strip().str.upper()
@@ -350,7 +302,7 @@ class BorrowContext:
                 generate_borrow_events(
                     universe=syms,
                     day=d,
-                    cfg_path=None,
+                    borrow_cfg=None,
                     lead_days=None,
                     locate_fee_bps=None,
                     availability_df=self.availability_long,
@@ -362,65 +314,42 @@ class BorrowContext:
     get_borrow_events = events_for_range
 
 
-def build_borrow_context(cfg: Mapping[str, Any]) -> BorrowContext | None:
-    """Public wrapper to construct a BorrowContext from the YAML config dict."""
-    return _build_borrow_ctx_from_cfg(cfg)
+def _borrow_rate_rows(rows: tuple[BorrowRatePoint, ...]) -> list[dict[str, Any]]:
+    return [
+        {"date": row.date, "symbol": row.symbol, "rate_annual": row.rate_annual}
+        for row in rows
+    ]
 
 
-def _build_borrow_ctx_from_cfg(cfg: Mapping[str, Any]) -> BorrowContext | None:
-    bcfg = (cfg.get("borrow", {}) or {}) if isinstance(cfg, Mapping) else {}
-    enabled = bool(bcfg.get("enabled", False))
-    if not enabled:
+def _borrow_availability_rows(
+    rows: tuple[BorrowAvailabilityPoint, ...],
+) -> list[dict[str, Any]]:
+    return [
+        {"date": row.date, "symbol": row.symbol, "available": row.available}
+        for row in rows
+    ]
+
+
+def build_borrow_context(cfg: BorrowConfig) -> BorrowContext | None:
+    if not isinstance(cfg, BorrowConfig):
+        raise TypeError("cfg must be a BorrowConfig")
+    if not cfg.enabled:
         return None
 
-    try:
-        day_basis = int(bcfg.get("day_basis", 252))
-    except Exception:
-        day_basis = 252
-    try:
-        default_rate = float(bcfg.get("default_rate_annual", 0.0))
-    except Exception:
-        default_rate = 0.0
-
-    accrual_mode = (
-        str(bcfg.get("accrual_mode", "entry_notional") or "entry_notional")
-        .strip()
-        .lower()
-    )
-    day_count = str(bcfg.get("day_count", "busdays") or "busdays").strip().lower()
-    include_exit_day = bool(bcfg.get("include_exit_day", False))
-    try:
-        min_days = int(bcfg.get("min_days", 1))
-    except Exception:
-        min_days = 1
-
-    # Inline-only inputs (YAML / dicts / lists)
-    per_asset_rates = _parse_per_asset_rates_any(
-        bcfg.get("per_asset_rate_annual", bcfg.get("per_asset_rates"))
-    )
-
-    rate_series_by_symbol: dict[str, pd.Series] = {}
-    # Preferred: long rows under borrow.rates
-    rs_long = _parse_rate_series_by_symbol_any(bcfg.get("rates"))
-    if rs_long:
-        rate_series_by_symbol.update(rs_long)
-    # Alternative: pre-grouped mapping under borrow.rate_series_by_symbol
-    rs_map = _parse_rate_series_by_symbol_any(bcfg.get("rate_series_by_symbol"))
-    if rs_map:
-        rate_series_by_symbol.update(rs_map)
-
+    per_asset_rates = _parse_per_asset_rates_any(cfg.per_asset_rate_annual)
+    rate_series_by_symbol = _parse_rate_series_by_symbol_any(_borrow_rate_rows(cfg.rates))
     availability_long = _parse_availability_long_any(
-        bcfg.get("availability", bcfg.get("availability_long"))
+        _borrow_availability_rows(cfg.availability)
     )
 
     return BorrowContext(
         enabled=True,
-        day_basis=day_basis,
-        accrual_mode=accrual_mode,
-        day_count=day_count,
-        include_exit_day=include_exit_day,
-        min_days=max(0, min_days),
-        default_rate_annual=default_rate,
+        day_basis=int(cfg.day_basis),
+        accrual_mode=str(cfg.accrual_mode),
+        day_count=str(cfg.day_count),
+        include_exit_day=bool(cfg.include_exit_day),
+        min_days=max(0, int(cfg.min_days)),
+        default_rate_annual=float(cfg.default_rate_annual),
         per_asset_rate_annual=per_asset_rates,
         rate_series_by_symbol=rate_series_by_symbol,
         availability_long=availability_long,

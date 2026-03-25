@@ -1,27 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
-from typing import Any, cast
+from dataclasses import asdict
+from typing import Any
 
 import numpy as np
 import pandas as pd
+
+from backtest.config.types import AppConfig
 
 __all__ = ["annotate_with_light"]
 
 
 def _resolve_exec_light_cfg(cfg_obj: Any) -> dict[str, Any]:
-    direct = getattr(cfg_obj, "exec_light", None)
-    if isinstance(direct, Mapping):
-        return dict(cast(Mapping[str, Any], direct))
-
-    raw_yaml = getattr(cfg_obj, "raw_yaml", {}) or {}
-    if isinstance(raw_yaml, Mapping):
-        ex = raw_yaml.get("execution")
-        if isinstance(ex, Mapping) and isinstance(ex.get("light"), Mapping):
-            return dict(cast(Mapping[str, Any], ex.get("light")))
-        if isinstance(raw_yaml.get("light"), Mapping):
-            return dict(cast(Mapping[str, Any], raw_yaml.get("light")))
-    return {}
+    if not isinstance(cfg_obj, AppConfig):
+        raise TypeError("cfg_obj must be an AppConfig")
+    return asdict(cfg_obj.execution.light)
 
 
 def _num_series(df: pd.DataFrame, col: str) -> pd.Series:

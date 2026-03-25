@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import math
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -12,6 +11,10 @@ import numpy as np
 import pandas as pd
 from matplotlib.dates import DateFormatter
 from matplotlib.ticker import FuncFormatter
+
+from backtest.utils.tz import to_naive_local
+
+from backtest.utils.io import write_json
 
 __all__ = [
     "TearsheetConfig",
@@ -264,7 +267,7 @@ def _plot_monthly_heatmap(
         return
     idx = cast(pd.DatetimeIndex, r_pct.index)
     # PeriodIndex is tz-naive, so make the month bucketing explicit first.
-    heatmap_idx = idx.tz_localize(None) if idx.tz is not None else idx
+    heatmap_idx = cast(pd.DatetimeIndex, to_naive_local(idx))
     months_seen = int(heatmap_idx.to_period("M").nunique())
     if months_seen < int(cfg.monthly_heatmap_min_months):
         return
@@ -396,10 +399,7 @@ def write_tearsheet(
     stats = summarize_stats(s, trades_df=trades_df, rf=rf)
     stats.to_csv(out_dir / "stats.csv", index=False)
     payload = stats.to_dict(orient="records")[0] if not stats.empty else {}
-    (out_dir / "stats.json").write_text(
-        json.dumps(payload, indent=2, ensure_ascii=False, default=_json_default),
-        encoding="utf-8",
-    )
+    write_json(out_dir / "stats.json", payload, default=_json_default)
 
     returns = compute_returns(s, kind="pct")
     drawdown = compute_drawdown(s)
