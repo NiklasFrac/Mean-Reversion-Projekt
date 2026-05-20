@@ -1,0 +1,1 @@
+"""Minimal Yahoo close downloader."""

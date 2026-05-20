@@ -1,31 +1,55 @@
-/.*
-**/.*
-!/.gitignore
-!/.gitattributes
-!/.github/
-!/.github/workflows/
-!/.github/workflows/*.yml
+# --- OS / Editor ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.vscode/
+.idea/
 
+# --- Python environment ---
+.venv/
+venv/
+ENV/
+env/
+
+# --- Python cache / bytecode ---
 __pycache__/
 *.py[cod]
+*$py.class
 
-.artifacts/
-.cache/
-.hypothesis/
+# --- Tool caches ---
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.venv/
-.vscode/
+.hypothesis/
 
-build/
-dist/
+# --- Coverage / test artifacts ---
+.coverage
+.coverage.*
+coverage.xml
 htmlcov/
 
+# --- Build / packaging artifacts ---
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-wheel-metadata/
+
+# --- Local generated artifacts ---
+.artifacts/
+artifacts/
+src.zip
+/mlflow.db
+
+# --- Runtime outputs (keep configs tracked) ---
+runs/data/
 runs/logs/
-runs/metadata/
-runs/mlruns/
+runs/snapshots/
 runs/results/*
 !runs/results/README.md
+runs/metadata/
+runs/codex_checks/
 runs/tmp/
-runs/tmp_tearsheet_check/
+
+# --- Optional local data dumps ---
+data/

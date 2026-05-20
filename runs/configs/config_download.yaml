@@ -1,0 +1,24 @@
+input:
+  screener_path: runs/data/nasdaq_screener_1772353567950.csv
+  symbol_col: Symbol
+  etf_filter:
+    enabled: true
+    column: null
+    exclude_values: ["1", "true", "yes", "y", "etf", "fund"]
+
+download:
+  start: "2020-03-01"
+  end: "2026-03-01"
+  batch_size: 50
+  retries: 2
+  pause_seconds: 3.0
+
+quality:
+  min_coverage: 0.95
+  max_gap: 3
+  min_final_tickers: 100
+
+output:
+  raw_close: runs/data/raw_close.csv
+  filled_close: runs/data/filled_close.csv
+  dropped_tickers: runs/data/dropped_tickers.csv
