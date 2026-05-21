@@ -135,7 +135,13 @@ def estimate_beta(y: pd.Series, x: pd.Series) -> float | None:
         return None
     mat = np.column_stack([np.ones(len(df)), df["x"].to_numpy(float)])
     beta = float(np.linalg.lstsq(mat, df["y"].to_numpy(float), rcond=None)[0][1])
-    return beta if np.isfinite(beta) and beta > 0 else None
+    return (
+        beta
+        if np.isfinite(beta)
+        and beta > 0
+        and not np.isclose(beta, 0.0, rtol=0.0, atol=np.finfo(float).eps)
+        else None
+    )
 
 
 def rolling_zscore(spread: pd.Series, window: int, min_periods: int) -> pd.Series:
