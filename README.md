@@ -12,12 +12,6 @@ continuous signals, transaction costs, risk caps, and reproducible report files.
 **Stack:** pandas, NumPy, yfinance, statsmodels, Bayesian Optimization,
 matplotlib, pytest, Ruff
 
-> **Proof of Concept:** This project is a research framework. It does not provide
-> trading advice, live execution, broker integration, or validated investment
-> results. Core assumptions such as date range, pair filters, signal thresholds,
-> costs, risk limits, and optimization ranges are configured in
-> `runs/configs/config_backtest.yaml`.
-
 ---
 
 ## 1. Data Download
