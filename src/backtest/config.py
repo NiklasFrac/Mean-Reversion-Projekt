@@ -16,6 +16,7 @@ class DataConfig:
 class PairSelectionConfig:
     min_obs: int = 120
     min_corr: float = 0.80
+    max_corr: float = 1.0
     max_eg_pvalue: float = 0.05
     min_half_life: float = 2.0
     max_half_life: float = 60.0
@@ -47,7 +48,7 @@ class StrategyConfig:
     stop_z: float = 3.0
     z_window: int = 45
     z_min_periods: int = 5
-    max_hold_days: int = 150
+    max_hold_half_life_multiplier: float = 1.5
     cooldown_days: int = 1
 
 
@@ -65,7 +66,6 @@ class MarkovConfig:
 
 @dataclass(frozen=True)
 class RiskConfig:
-    max_open_pairs: int = 20
     max_pair_weight: float = 0.05
     max_drawdown: float = 0.25
 
@@ -77,20 +77,11 @@ class CostsConfig:
 
 
 @dataclass(frozen=True)
-class BOCVConfig:
-    n_blocks: int = 5
-    k_test_blocks: int = 2
-    purge: int = 0
-    embargo: float = 0.0
-
-
-@dataclass(frozen=True)
 class BOConfig:
     enabled: bool = False
     init_points: int = 5
     n_iter: int = 15
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
-    cv: BOCVConfig = field(default_factory=BOCVConfig)
 
 
 @dataclass(frozen=True)
@@ -142,7 +133,6 @@ def load_config(path: str | Path) -> Config:
             init_points=int(bo.get("init_points", 5)),
             n_iter=int(bo.get("n_iter", 15)),
             ranges={k: tuple(v) for k, v in (bo.get("ranges") or {}).items()},
-            cv=BOCVConfig(**(bo.get("cv") or {})),
         ),
         output=OutputConfig(
             dir=Path((raw.get("output") or {}).get("dir", "runs/results/backtest"))

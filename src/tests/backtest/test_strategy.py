@@ -5,7 +5,7 @@ import pandas as pd
 import pytest
 
 import backtest.strategy as strategy_mod
-from backtest.config import MarkovConfig, RiskConfig, StrategyConfig
+from backtest.config import MarkovConfig, StrategyConfig
 from backtest.strategy import (
     WindowPlan,
     build_continuous_signals,
@@ -90,17 +90,17 @@ def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() 
 
 
 @pytest.mark.parametrize(
-    ("cfg", "z_values", "expected"),
+    ("cfg", "z_values", "max_hold_days", "expected"),
     [
         (
             StrategyConfig(
                 entry_z=1.0,
                 exit_z=0.2,
                 stop_z=3.0,
-                max_hold_days=10,
                 cooldown_days=1,
             ),
             [-1.2, -0.8, 0.1, -1.5, -0.5, -1.5],
+            10,
             [1, 1, 0, 0, 0, 1],
         ),
         (
@@ -108,10 +108,10 @@ def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() 
                 entry_z=1.0,
                 exit_z=0.2,
                 stop_z=3.0,
-                max_hold_days=10,
                 cooldown_days=0,
             ),
             [1.2, 1.4, 3.1, 0.0, -1.2, -3.1],
+            10,
             [-1, -1, 0, 0, 1, 0],
         ),
         (
@@ -119,10 +119,10 @@ def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() 
                 entry_z=1.0,
                 exit_z=0.2,
                 stop_z=3.0,
-                max_hold_days=10,
                 cooldown_days=0,
             ),
             [-1.2, -0.8, 1.2, 0.0, 1.2, 0.0],
+            10,
             [1, 1, 0, 0, -1, 0],
         ),
         (
@@ -130,20 +130,25 @@ def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() 
                 entry_z=1.0,
                 exit_z=0.2,
                 stop_z=3.0,
-                max_hold_days=3,
                 cooldown_days=0,
             ),
             [-1.2, -0.9, -0.8, -0.7, -0.6, -0.5],
+            3,
             [1, 1, 1, 0, 0, 0],
         ),
     ],
 )
 def test_positions_from_z_handles_core_state_transitions(
-    cfg: StrategyConfig, z_values: list[float], expected: list[int]
+    cfg: StrategyConfig,
+    z_values: list[float],
+    max_hold_days: int,
+    expected: list[int],
 ) -> None:
     idx = pd.date_range("2024-01-01", periods=len(z_values), freq="D")
 
-    positions = positions_from_z(pd.Series(z_values, index=idx), cfg)
+    positions = positions_from_z(
+        pd.Series(z_values, index=idx), cfg, max_hold_days=max_hold_days
+    )
 
     assert positions.dtype == np.dtype("int8")
     assert positions.tolist() == expected
@@ -152,12 +157,30 @@ def test_positions_from_z_handles_core_state_transitions(
 def test_positions_from_z_gate_controls_new_entries_only() -> None:
     idx = pd.date_range("2024-01-01", periods=7, freq="D")
     cfg = StrategyConfig(
-        entry_z=1.0, exit_z=0.2, stop_z=3.0, max_hold_days=10, cooldown_days=0
+        entry_z=1.0, exit_z=0.2, stop_z=3.0, cooldown_days=0
     )
     z = pd.Series([-1.2, -0.5, -1.2, -0.8, 0.1, 1.2, 0.0], index=idx)
     gate = pd.Series([False, True, True, False, False, np.nan, True], index=idx)
 
-    assert positions_from_z(z, cfg, gate).tolist() == [0, 0, 1, 1, 0, -1, 0]
+    assert positions_from_z(z, cfg, gate, max_hold_days=10).tolist() == [
+        0,
+        0,
+        1,
+        1,
+        0,
+        -1,
+        0,
+    ]
+
+
+def test_positions_from_z_uses_max_hold_override() -> None:
+    idx = pd.date_range("2024-01-01", periods=4, freq="D")
+    cfg = StrategyConfig(
+        entry_z=1.0, exit_z=0.0, stop_z=99.0, cooldown_days=0
+    )
+    z = pd.Series([-1.2, -0.9, -0.8, -0.7], index=idx)
+
+    assert positions_from_z(z, cfg, max_hold_days=2).tolist() == [1, 1, 0, 0]
 
 
 def test_run_baseline_filters_pairs_and_applies_markov_gate(
@@ -180,7 +203,6 @@ def test_run_baseline_filters_pairs_and_applies_markov_gate(
         stop_z=99.0,
         z_window=2,
         z_min_periods=2,
-        max_hold_days=10,
         cooldown_days=0,
     )
     calls = []
@@ -231,9 +253,7 @@ def test_continuous_signals_carry_unreselected_trade_and_force_final_exit() -> N
     prices = _continuous_prices()
     plans = _manual_plans(prices, first_max_hold=100, second_pairs=False)
 
-    sig = build_continuous_signals(
-        prices, plans, RiskConfig(max_open_pairs=1, max_pair_weight=0.5)
-    )
+    sig = build_continuous_signals(prices, plans)
 
     pair = "AAA-BBB"
     assert sig.positions.at[prices.index[3], pair] == 1
@@ -247,9 +267,7 @@ def test_continuous_signals_keep_entry_strategy_and_beta_after_reselection() -> 
         prices, first_max_hold=100, second_pairs=True, second_beta=2.0
     )
 
-    sig = build_continuous_signals(
-        prices, plans, RiskConfig(max_open_pairs=1, max_pair_weight=0.5)
-    )
+    sig = build_continuous_signals(prices, plans)
 
     pair = "AAA-BBB"
     assert sig.positions.at[prices.index[8], pair] == 1
@@ -257,7 +275,7 @@ def test_continuous_signals_keep_entry_strategy_and_beta_after_reselection() -> 
     assert sig.positions.at[prices.index[-1], pair] == 0
 
 
-def test_continuous_signals_rank_candidates_under_max_open_pairs() -> None:
+def test_continuous_signals_opens_all_valid_candidates() -> None:
     idx = pd.date_range("2024-01-01", periods=7, freq="D")
     prices = _prices_from_spreads(
         idx,
@@ -277,21 +295,18 @@ def test_continuous_signals_rank_candidates_under_max_open_pairs() -> None:
             stop_z=99.0,
             z_window=3,
             z_min_periods=2,
-            max_hold_days=100,
             cooldown_days=0,
         ),
         MarkovConfig(enabled=False),
         {pair: 1.0 for pair in pairs},
+        {pair: 100 for pair in pairs},
     )
 
-    sig = build_continuous_signals(
-        prices, [plan], RiskConfig(max_open_pairs=1, max_pair_weight=0.5)
-    )
+    sig = build_continuous_signals(prices, [plan])
 
     assert sig.positions.at[idx[3], "B-XB"] == 1
-    assert sig.positions.at[idx[3], "A-XA"] == 0
-    assert sig.positions.at[idx[3], "C-XC"] == 0
-    assert sig.positions.drop(columns="B-XB").eq(0).all().all()
+    assert sig.positions.at[idx[3], "A-XA"] == 1
+    assert sig.positions.at[idx[3], "C-XC"] == 1
 
 
 def test_continuous_signals_gate_and_cooldown_block_reentries(
@@ -311,11 +326,11 @@ def test_continuous_signals_gate_and_cooldown_block_reentries(
             stop_z=99.0,
             z_window=2,
             z_min_periods=2,
-            max_hold_days=1,
             cooldown_days=2,
         ),
         MarkovConfig(enabled=True),
         {"AAA-BBB": 1.0},
+        {"AAA-BBB": 1},
     )
 
     def block_first_entry(
@@ -334,9 +349,7 @@ def test_continuous_signals_gate_and_cooldown_block_reentries(
 
     monkeypatch.setattr(strategy_mod, "markov_gate", block_first_entry)
 
-    sig = build_continuous_signals(
-        prices, [plan], RiskConfig(max_open_pairs=1, max_pair_weight=0.5)
-    )
+    sig = build_continuous_signals(prices, [plan])
 
     pair = "AAA-BBB"
     assert sig.positions.at[idx[3], pair] == 0
@@ -383,7 +396,6 @@ def _manual_plans(
         stop_z=99.0,
         z_window=3,
         z_min_periods=2,
-        max_hold_days=first_max_hold,
         cooldown_days=1,
     )
     second = StrategyConfig(
@@ -392,7 +404,6 @@ def _manual_plans(
         stop_z=99.0,
         z_window=3,
         z_min_periods=2,
-        max_hold_days=1,
         cooldown_days=1,
     )
     return [
@@ -402,6 +413,7 @@ def _manual_plans(
             first,
             MarkovConfig(enabled=False),
             {"AAA-BBB": 1.0},
+            {"AAA-BBB": first_max_hold},
         ),
         WindowPlan(
             Window(1, idx[0], idx[5], idx[6], idx[-1]),
@@ -409,6 +421,7 @@ def _manual_plans(
             second,
             MarkovConfig(enabled=False),
             {"AAA-BBB": second_beta} if second_pairs else {},
+            {"AAA-BBB": 1} if second_pairs else {},
         ),
     ]
 

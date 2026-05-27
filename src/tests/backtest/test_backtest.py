@@ -82,6 +82,58 @@ def test_pair_selection_uses_train_window_filters_and_ranking() -> None:
     assert metrics["eg_pvalue"].iloc[0] <= 0.20
 
 
+def test_pair_selection_filters_correlations_above_max(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    base = np.array([0.01, 0.02, -0.01, 0.03, -0.02, 0.01, -0.015, 0.02])
+    mid = np.array([0.015, 0.005, -0.01, 0.025, 0.0, 0.005, -0.02, 0.015])
+    prices = pd.DataFrame(
+        {
+            "AAA": _prices_from_returns(base),
+            "BBB": _prices_from_returns(base),
+            "CCC": _prices_from_returns(mid),
+        },
+        index=pd.date_range("2024-01-01", periods=len(base) + 1, freq="D"),
+    )
+    calls: list[tuple[str, str, float]] = []
+
+    def fake_test_pair(
+        y: pd.Series, x: pd.Series, y_name: str, x_name: str, corr: float
+    ) -> dict:
+        del y, x
+        calls.append((y_name, x_name, corr))
+        return {
+            "pair": f"{y_name}-{x_name}",
+            "y": y_name,
+            "x": x_name,
+            "corr": corr,
+            "eg_pvalue": 0.01,
+            "beta": 1.0,
+            "half_life": 2.0,
+            "hurst": 0.2,
+        }
+
+    monkeypatch.setattr("backtest.pair_selection._test_pair", fake_test_pair)
+    pairs, metrics = select_pairs(
+        prices,
+        Window(0, prices.index[0], prices.index[-1], prices.index[-1], prices.index[-1]),
+        PairSelectionConfig(
+            min_obs=5,
+            min_corr=0.50,
+            max_corr=0.95,
+            max_eg_pvalue=0.20,
+            min_half_life=1.0,
+            max_half_life=60.0,
+            max_hurst=0.90,
+            max_pairs=10,
+        ),
+    )
+
+    assert ("AAA", "BBB") not in [(a, b) for a, b, _ in calls]
+    assert set(pairs) == {"AAA-CCC", "BBB-CCC"}
+    assert metrics["corr"].le(0.95).all()
+
+
 def test_run_requires_contiguous_test_windows(tmp_path) -> None:
     prices = _cointegrated_prices(periods=160)
     prices_path = tmp_path / "prices.csv"
@@ -123,9 +175,9 @@ def test_smoke_cli_writes_core_outputs(tmp_path) -> None:
                 step_months=1,
             ),
         ),
-        strategy=StrategyConfig(z_window=10, z_min_periods=3, max_hold_days=20),
+        strategy=StrategyConfig(z_window=10, z_min_periods=3),
         markov=MarkovConfig(enabled=False),
-        risk=RiskConfig(max_open_pairs=1, max_pair_weight=0.5, max_drawdown=0.5),
+        risk=RiskConfig(max_pair_weight=0.5, max_drawdown=0.5),
         costs=CostsConfig(fee_bps=0.0, slippage_bps=0.0),
         output=OutputConfig(dir=tmp_path / "out"),
     )
@@ -137,6 +189,7 @@ def test_smoke_cli_writes_core_outputs(tmp_path) -> None:
         "equity.csv",
         "trades.csv",
         "positions.csv",
+        "weights.csv",
         "windows.csv",
         "selected_pairs.csv",
     ):
@@ -161,3 +214,7 @@ def _cointegrated_prices(periods: int = 260) -> pd.DataFrame:
         {"AAA": np.exp(y_log), "BBB": np.exp(x_log), "CCC": np.exp(z_log)},
         index=idx,
     )
+
+
+def _prices_from_returns(returns: np.ndarray) -> np.ndarray:
+    return 100.0 * np.cumprod(np.r_[1.0, 1.0 + returns])

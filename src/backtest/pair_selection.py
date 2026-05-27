@@ -23,7 +23,7 @@ def select_pairs(
     for i, a in enumerate(cols):
         for b in cols[i + 1 :]:
             c = corr.at[a, b]
-            if pd.notna(c) and float(c) >= cfg.min_corr:
+            if pd.notna(c) and cfg.min_corr <= float(c) <= cfg.max_corr:
                 row = _test_pair(np.log(train[a]), np.log(train[b]), a, b, float(c))
                 if row and _passes(row, cfg):
                     rows.append(row)

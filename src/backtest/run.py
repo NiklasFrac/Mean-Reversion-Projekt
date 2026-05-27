@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import argparse
 import logging
+import math
 from pathlib import Path
 
 import pandas as pd
 
-from backtest.config import Config, load_config
+from backtest.config import Config, StrategyConfig, load_config
 from backtest.data import load_prices
 from backtest.engine import BacktestResult, run_engine
 from backtest.optimize import optimize_params
@@ -42,17 +43,20 @@ def run_config(cfg: Config) -> BacktestResult:
         if not pairs:
             raise ValueError(f"No pairs selected for window {window.i}")
         logger.info("window %s selected %d pair(s)", window.i, len(pairs))
+        strategy = cfg.strategy
+        max_hold_days_by_pair = _max_hold_days_by_pair(selected, strategy)
         strategy, markov, trials, best = optimize_params(
             prices,
             pairs,
             window,
-            cfg.strategy,
+            strategy,
             cfg.markov,
             cfg.risk,
             cfg.costs,
             cfg.bo,
             initial_capital=cfg.backtest.initial_capital,
             seed=cfg.seed + window.i,
+            max_hold_days_by_pair=max_hold_days_by_pair,
         )
         if not trials.empty:
             trials.insert(0, "window", window.i)
@@ -61,6 +65,9 @@ def run_config(cfg: Config) -> BacktestResult:
             bo_best.append({"window": window.i, **best})
         betas = estimate_betas(prices, pairs, window)
         pairs = {pair: cols for pair, cols in pairs.items() if pair in betas}
+        max_hold_days_by_pair = {
+            pair: days for pair, days in max_hold_days_by_pair.items() if pair in pairs
+        }
         selected = (
             selected[selected["pair"].isin(pairs)] if not selected.empty else selected
         )
@@ -73,19 +80,30 @@ def run_config(cfg: Config) -> BacktestResult:
             "test_end": str(window.test_end.date()),
         }
         if not selected.empty:
+            if max_hold_days_by_pair:
+                selected = selected.assign(
+                    max_hold_days=selected["pair"].map(max_hold_days_by_pair)
+                )
             pair_rows.append(selected.assign(window=window.i, **window_dates))
-        plans.append(WindowPlan(window, pairs, strategy, markov, betas))
+        plans.append(
+            WindowPlan(window, pairs, strategy, markov, betas, max_hold_days_by_pair)
+        )
         win_rows.append(
             {
                 "window": window.i,
                 **window_dates,
                 "n_pairs": len(pairs),
                 "pairs": ";".join(pairs),
+                "entry_z": strategy.entry_z,
+                "exit_z": strategy.exit_z,
+                "stop_z": strategy.stop_z,
+                "min_revert_prob": markov.min_revert_prob,
+                "horizon_days": markov.horizon_days,
             }
         )
 
     all_pairs = {pair: cols for plan in plans for pair, cols in plan.pairs.items()}
-    sig = build_continuous_signals(prices, plans, cfg.risk)
+    sig = build_continuous_signals(prices, plans)
     result = run_engine(
         prices,
         all_pairs,
@@ -108,6 +126,23 @@ def run_config(cfg: Config) -> BacktestResult:
         bo_best=bo_best,
     )
     return result
+
+
+def _max_hold_days_by_pair(
+    selected: pd.DataFrame, strategy: StrategyConfig
+) -> dict[str, int]:
+    multiplier = strategy.max_hold_half_life_multiplier
+    if selected.empty or "half_life" not in selected:
+        return {}
+    multiplier = float(multiplier)
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError("strategy.max_hold_half_life_multiplier must be positive")
+    out = {}
+    for row in selected[["pair", "half_life"]].itertuples(index=False):
+        half_life = float(row.half_life)
+        if math.isfinite(half_life):
+            out[str(row.pair)] = max(1, int(math.ceil(half_life * multiplier)))
+    return out
 
 
 def _setup_logging(out_dir: str | Path, level: str) -> None:

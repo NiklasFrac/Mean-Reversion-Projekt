@@ -14,34 +14,10 @@ from backtest.config import (
     StrategyConfig,
 )
 from backtest.engine import run_engine
-from backtest.risk import cap_positions
 from backtest.strategy import run_baseline
 from backtest.walkforward import Window
 
 BAD_SCORE = -1e6
-
-
-def blocked_folds(
-    index: pd.DatetimeIndex, bo: BOConfig
-) -> list[tuple[pd.DatetimeIndex, pd.DatetimeIndex]]:
-    idx = index.drop_duplicates().sort_values()
-    bounds = np.linspace(0, len(idx), bo.cv.n_blocks + 1, dtype=int)
-    folds = []
-    for i in range(0, bo.cv.n_blocks - bo.cv.k_test_blocks + 1):
-        left, right = bounds[i], bounds[i + bo.cv.k_test_blocks]
-        test = idx[left:right]
-        if bo.cv.purge:
-            test = test[bo.cv.purge : max(bo.cv.purge, len(test) - bo.cv.purge)]
-        train_mask = np.ones(len(idx), dtype=bool)
-        train_mask[
-            max(0, left - bo.cv.purge) : min(
-                len(idx), right + int(bo.cv.embargo * len(test))
-            )
-        ] = False
-        train = idx[train_mask]
-        if len(train) and len(test):
-            folds.append((train, test))
-    return folds
 
 
 def optimize_params(
@@ -56,38 +32,56 @@ def optimize_params(
     *,
     initial_capital: float,
     seed: int,
+    max_hold_days_by_pair: dict[str, int] | None = None,
 ) -> tuple[StrategyConfig, MarkovConfig, pd.DataFrame, dict[str, Any]]:
     space = {k: tuple(map(float, v)) for k, v in bo.ranges.items()}
     if not bo.enabled or not space:
         return strategy, markov, pd.DataFrame(), {}
 
-    folds = blocked_folds(
-        pd.DatetimeIndex(prices.loc[window.train_start : window.train_end].index), bo
+    scoring_window = Window(
+        window.i,
+        window.train_start,
+        window.train_end,
+        window.train_start,
+        window.train_end,
     )
     trials: list[dict[str, Any]] = []
 
     def objective(**params: float) -> float:
         strat, mark = _with_params(strategy, markov, params)
-        scores = []
-        for train, test in folds:
-            fold = Window(0, train[0], train[-1], test[0], test[-1])
-            sig = run_baseline(prices, pairs, fold, strat, mark)
-            pos = cap_positions(sig.positions, sig.zscores, risk)
-            betas = pd.DataFrame(sig.betas, index=pos.index)
-            res = run_engine(
-                prices,
-                pairs,
-                betas,
-                pos,
-                sig.zscores,
-                initial_capital=initial_capital,
-                costs=costs,
-                risk=risk,
-            )
-            scores.append(float(res.summary.get("sharpe", BAD_SCORE)))
-        score = float(np.median(scores)) if scores else BAD_SCORE
+        baseline_kwargs = (
+            {"max_hold_days_by_pair": max_hold_days_by_pair}
+            if max_hold_days_by_pair
+            else {}
+        )
+        sig = run_baseline(
+            prices,
+            pairs,
+            scoring_window,
+            strat,
+            mark,
+            **baseline_kwargs,
+        )
+        pos = sig.positions
+        betas = pd.DataFrame(sig.betas, index=pos.index)
+        res = run_engine(
+            prices,
+            pairs,
+            betas,
+            pos,
+            sig.zscores,
+            initial_capital=initial_capital,
+            costs=costs,
+            risk=risk,
+        )
+        try:
+            score = float(res.summary.get("sharpe", BAD_SCORE))
+        except (TypeError, ValueError):
+            score = BAD_SCORE
+        if not np.isfinite(score):
+            score = BAD_SCORE
         trials.append({"score": score, **{k: float(v) for k, v in params.items()}})
-        return score if np.isfinite(score) else BAD_SCORE
+        return score
 
     best_params, best_score = _bayes_or_random(
         objective, space, seed, bo.init_points, bo.n_iter

@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
-from backtest.config import MarkovConfig, RiskConfig, StrategyConfig
+from backtest.config import MarkovConfig, StrategyConfig
 from backtest.markov import markov_gate
 from backtest.walkforward import Window
 
@@ -24,6 +24,7 @@ class WindowPlan:
     strategy: StrategyConfig
     markov: MarkovConfig
     betas: dict[str, float]
+    max_hold_days_by_pair: dict[str, int] = field(default_factory=dict)
 
 
 def run_baseline(
@@ -32,10 +33,12 @@ def run_baseline(
     window: Window,
     strategy: StrategyConfig,
     markov: MarkovConfig,
+    max_hold_days_by_pair: dict[str, int] | None = None,
 ) -> StrategyOutput:
     idx = prices.loc[window.train_start : window.test_end].index
     eval_idx = prices.loc[window.test_start : window.test_end].index
     pos, zcols, betas = {}, {}, {}
+    max_hold_days_by_pair = max_hold_days_by_pair or {}
 
     for pair, (y_name, x_name) in pairs.items():
         if y_name not in prices or x_name not in prices:
@@ -61,7 +64,12 @@ def run_baseline(
             exit_z=strategy.exit_z,
         )
         z_eval = z.reindex(eval_idx)
-        pos[pair] = positions_from_z(z_eval, strategy, gate)
+        pos[pair] = positions_from_z(
+            z_eval,
+            strategy,
+            gate,
+            max_hold_days=max_hold_days_by_pair.get(pair),
+        )
         zcols[pair] = z_eval
         betas[pair] = float(beta)
 
@@ -73,7 +81,7 @@ def run_baseline(
 
 
 def build_continuous_signals(
-    prices: pd.DataFrame, plans: list[WindowPlan], risk: RiskConfig
+    prices: pd.DataFrame, plans: list[WindowPlan]
 ) -> StrategyOutput:
     idx = prices.loc[plans[0].window.test_start : plans[-1].window.test_end].index
     pairs = {pair: cols for plan in plans for pair, cols in plan.pairs.items()}
@@ -106,7 +114,7 @@ def build_continuous_signals(
                 if pair not in states and pair not in exited and days > 0:
                     cooldowns[pair] = days - 1
             if not final_day:
-                _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache, risk)
+                _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache)
             for pair, state in states.items():
                 if pd.isna(zscores.at[ts, pair]):
                     zscores.at[ts, pair] = zcache[(state["plan_i"], pair)].get(
@@ -179,7 +187,11 @@ def _update_open(
         if not should_exit:
             state["held"] += 1
             z_value = float(z)
-            should_exit = state["held"] >= int(cfg.max_hold_days) or (
+            max_hold_days = state.get("max_hold_days")
+            time_exit = (
+                max_hold_days is not None and state["held"] >= int(max_hold_days)
+            )
+            should_exit = time_exit or (
                 np.isfinite(z_value)
                 and (abs(z_value) <= abs(cfg.exit_z) or abs(z_value) >= abs(cfg.stop_z))
             )
@@ -192,10 +204,7 @@ def _update_open(
     return exited
 
 
-def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache, risk) -> None:
-    free = int(risk.max_open_pairs) - len(states)
-    if free <= 0:
-        return
+def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache) -> None:
     candidates = []
     entry, stop = abs(plan.strategy.entry_z), abs(plan.strategy.stop_z)
     for pair in plan.pairs:
@@ -224,22 +233,27 @@ def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache, risk) -> None:
             pos = -1
         if pos:
             candidates.append((abs(z_value), pair, pos))
-    for _, pair, pos in sorted(candidates, reverse=True)[:free]:
+    for _, pair, pos in sorted(candidates, reverse=True):
         states[pair] = {
             "pos": pos,
             "held": 0,
             "plan_i": plan_i,
             "beta": plan.betas[pair],
             "strategy": plan.strategy,
+            "max_hold_days": plan.max_hold_days_by_pair.get(pair),
         }
 
 
 def positions_from_z(
-    z: pd.Series, cfg: StrategyConfig, gate: pd.Series | None = None
+    z: pd.Series,
+    cfg: StrategyConfig,
+    gate: pd.Series | None = None,
+    max_hold_days: int | None = None,
 ) -> pd.Series:
     out = pd.Series(0, index=z.index, dtype="int8")
     pos, held, cool_left, prev = 0, 0, 0, np.nan
     entry, exit_z, stop = abs(cfg.entry_z), abs(cfg.exit_z), abs(cfg.stop_z)
+    max_hold_days = None if max_hold_days is None else int(max_hold_days)
     gate = gate.reindex(z.index) if gate is not None else None
 
     for ts, raw in z.items():
@@ -270,7 +284,8 @@ def positions_from_z(
             flip = (pos == 1 and np.isfinite(zt) and zt >= entry) or (
                 pos == -1 and np.isfinite(zt) and zt <= -entry
             )
-            if leave or flip or held >= cfg.max_hold_days:
+            time_exit = max_hold_days is not None and held >= max_hold_days
+            if leave or flip or time_exit:
                 pos, held, cool_left = 0, 0, max(0, cfg.cooldown_days)
         out.at[ts] = pos
         prev = zt

@@ -30,7 +30,7 @@ uv run python -m download.runner_download --cfg runs/configs/config_download.yam
 
 | Section | Purpose |
 | --- | --- |
-| `input` | Screener path, symbol column, optional ETF/fund filter. |
+| `input` | Screener path, symbol column, optional ETF/fund and security-type filters. |
 | `download` | Date range, batch size, retry count, and request pause. |
 | `quality` | Minimum data coverage, maximum gap length, minimum final ticker count. |
 | `output` | Paths for raw prices, cleaned prices, and dropped ticker report. |
@@ -39,12 +39,19 @@ uv run python -m download.runner_download --cfg runs/configs/config_download.yam
 
 Each ticker is validated before it enters the backtest input:
 
-1. Fully missing price series are dropped.
-2. Non-positive prices are dropped.
-3. Series below `quality.min_coverage` are dropped.
-4. Leading or trailing gaps are dropped.
-5. Internal gaps larger than `quality.max_gap` are dropped.
-6. Remaining valid gaps are forward-filled.
+1. Optional input filters remove ETFs/funds and configured structured securities before download.
+2. Fully missing price series are dropped.
+3. Non-positive prices are dropped.
+4. Series below `quality.min_coverage` are dropped.
+5. Leading or trailing gaps are dropped.
+6. Internal gaps larger than `quality.max_gap` are dropped.
+7. Remaining valid gaps are forward-filled.
+
+`input.security_filter` can block instruments by regex matches on the screener
+name, regex matches on the normalized ticker, or exact screener column values.
+The default config excludes common structured or derivative-like instruments
+such as rights, warrants, units, preferreds, notes, trust securities, ticker
+symbols containing `^`, and the `Blank Checks` industry.
 
 ### Outputs
 
@@ -61,6 +68,7 @@ ticker,reason
 ABC,coverage_below_threshold
 XYZ,gap_too_large
 ETF1,etf_filtered
+AACBR,security_filtered
 ```
 
 Example `filled_close.csv` structure:
@@ -78,10 +86,10 @@ date,AAPL,MSFT,NVDA,...
 Pairs are selected independently inside each training window. The selector uses
 only positive, complete price series from the current training period.
 
-Candidate pairs first need sufficient return correlation:
+Candidate pairs first need return correlation inside the configured range:
 
 ```text
-corr(return_y, return_x) >= pair_selection.min_corr
+pair_selection.min_corr <= corr(return_y, return_x) <= pair_selection.max_corr
 ```
 
 For correlated candidates, the system tests both directions and keeps the
@@ -90,6 +98,7 @@ then filtered by the configured thresholds:
 
 | Config field | Meaning |
 | --- | --- |
+| `pair_selection.min_corr` / `max_corr` | Accepted return-correlation range. |
 | `pair_selection.max_eg_pvalue` | Maximum accepted cointegration p-value. |
 | `pair_selection.min_half_life` / `max_half_life` | Accepted mean-reversion speed range. |
 | `pair_selection.max_hurst` | Maximum accepted Hurst exponent. |
@@ -147,8 +156,11 @@ Positions are closed when one of the configured exit conditions is met:
 ```text
 abs(z_t) <= strategy.exit_z
 abs(z_t) >= strategy.stop_z
-holding_days >= strategy.max_hold_days
+holding_days >= ceil(train_window_half_life * strategy.max_hold_half_life_multiplier)
 ```
+
+The half-life comes from the current walk-forward training window, so max hold
+is pair-specific and can change between windows.
 
 After an exit, `strategy.cooldown_days` blocks immediate re-entry in the same
 pair.
@@ -202,25 +214,17 @@ all trades.
 
 ## 5. Risk Manager
 
-The risk layer limits the number of simultaneously active pair positions.
-The main cap is configured as:
-
-```text
-risk.max_open_pairs
-```
-
-If more pairs are active than allowed, the system keeps the strongest signals by
-absolute z-score and sets the others to zero:
-
-```text
-keep = top_n(abs(z_t), n=risk.max_open_pairs)
-```
-
-Portfolio weights are applied later in the engine:
+The risk layer controls the portfolio weight assigned to each active pair.
+Positions are generated as `-1`, `0`, or `+1`, then converted into portfolio
+weights later in the engine:
 
 ```text
 weight_pair_t = position_pair_t * risk.max_pair_weight
 ```
+
+There is no separate cap on the number of simultaneously active pairs. Active
+pair count is determined by pair selection, entry/exit rules, cooldowns, and the
+optional Markov gate.
 
 `risk.max_drawdown` is available as a configuration-level risk assumption.
 
@@ -267,24 +271,13 @@ walk-forward test window. The search space is configured under `bo.ranges`.
 
 For each candidate parameter set:
 
-1. Split the training window into blocked cross-validation folds.
-2. Run baseline signals on each fold.
-3. Apply risk capping.
-4. Run the engine.
-5. Score the parameter set by median fold Sharpe.
+1. Run baseline signals on the current walk-forward training window.
+2. Run the engine on that training window.
+3. Score the parameter set by train-window Sharpe.
 
 ```text
-score(params) = median(sharpe_fold_1, ..., sharpe_fold_n)
+score(params) = train_window_sharpe
 ```
-
-Blocked CV is configured under `bo.cv`:
-
-| Config field | Meaning |
-| --- | --- |
-| `bo.cv.n_blocks` | Number of chronological blocks. |
-| `bo.cv.k_test_blocks` | Adjacent blocks used as the test fold. |
-| `bo.cv.purge` | Removes observations around fold boundaries. |
-| `bo.cv.embargo` | Removes observations after the test block from training. |
 
 If Bayesian Optimization is unavailable, the system falls back to seeded random
 search over the same parameter ranges.
@@ -351,6 +344,7 @@ The engine writes all reports to `output.dir` from
 | `daily.csv` | Return, turnover, equity, and drawdown by date. |
 | `equity.csv` | Equity curve. |
 | `positions.csv` | Pair position matrix. |
+| `weights.csv` | Pair portfolio-weight matrix after applying `risk.max_pair_weight`. |
 | `trades.csv` | Position changes with date, pair, position, and z-score. |
 | `windows.csv` | Walk-forward windows and selected pair counts. |
 | `selected_pairs.csv` | Pair-selection diagnostics per window. |

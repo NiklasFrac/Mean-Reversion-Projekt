@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import re
 import time
 from datetime import datetime
 from pathlib import Path
@@ -56,18 +57,12 @@ def _read_symbols(cfg: dict) -> tuple[list[str], list[dict[str, str]]]:
     df = df[df["_ticker"].ne("")]
 
     dropped: list[dict[str, str]] = []
-    filt = inp.get("etf_filter") or {}
-    if filt.get("enabled", False):
-        col = filt.get("column") or _find_etf_col(df.columns)
-        if col is None:
-            logger.warning("ETF filter skipped: no hard ETF column found")
-        else:
-            values = {str(v).strip().lower() for v in filt.get("exclude_values", [])}
-            mask = df[col].fillna("").str.strip().str.lower().isin(values)
-            dropped = [
-                {"ticker": t, "reason": "etf_filtered"} for t in df.loc[mask, "_ticker"]
-            ]
-            df = df.loc[~mask]
+    df, etf_drops = _apply_etf_filter(df, inp.get("etf_filter") or {})
+    dropped += etf_drops
+    df, security_drops = _apply_security_filter(
+        df, inp.get("security_filter") or {}
+    )
+    dropped += security_drops
 
     return list(dict.fromkeys(df["_ticker"])), dropped
 
@@ -85,10 +80,72 @@ def _find_etf_col(columns) -> str | None:
     return None
 
 
+def _apply_etf_filter(
+    df: pd.DataFrame, filt: dict
+) -> tuple[pd.DataFrame, list[dict[str, str]]]:
+    if not filt.get("enabled", False):
+        return df, []
+    col = filt.get("column") or _find_etf_col(df.columns)
+    if col is None:
+        logger.warning("ETF filter skipped: no hard ETF column found")
+        return df, []
+    values = {str(v).strip().lower() for v in filt.get("exclude_values", [])}
+    mask = df[col].fillna("").str.strip().str.lower().isin(values)
+    return _drop_masked(df, mask, "etf_filtered")
+
+
+def _apply_security_filter(
+    df: pd.DataFrame, filt: dict
+) -> tuple[pd.DataFrame, list[dict[str, str]]]:
+    if not filt.get("enabled", False):
+        return df, []
+
+    mask = pd.Series(False, index=df.index)
+    name_patterns = filt.get("exclude_name_patterns") or []
+    if name_patterns:
+        name_col = filt.get("name_column") or "Name"
+        if name_col not in df:
+            logger.warning("security filter skipped name patterns: missing %s", name_col)
+        else:
+            mask |= _regex_mask(df[name_col], name_patterns, "exclude_name_patterns")
+
+    symbol_patterns = filt.get("exclude_symbol_patterns") or []
+    if symbol_patterns:
+        mask |= _regex_mask(df["_ticker"], symbol_patterns, "exclude_symbol_patterns")
+
+    for col, values in (filt.get("exclude_column_values") or {}).items():
+        if col not in df:
+            logger.warning("security filter skipped column values: missing %s", col)
+            continue
+        blocked = {str(v).strip().lower() for v in values}
+        mask |= df[col].fillna("").str.strip().str.lower().isin(blocked)
+
+    return _drop_masked(df, mask, "security_filtered")
+
+
+def _regex_mask(series: pd.Series, patterns: list[str], config_key: str) -> pd.Series:
+    out = pd.Series(False, index=series.index)
+    text = series.fillna("").astype(str)
+    for pattern in patterns:
+        try:
+            out |= text.str.contains(pattern, case=False, regex=True, na=False)
+        except re.error as exc:
+            raise ValueError(f"Invalid regex in security_filter.{config_key}: {pattern}") from exc
+    return out
+
+
+def _drop_masked(
+    df: pd.DataFrame, mask: pd.Series, reason: str
+) -> tuple[pd.DataFrame, list[dict[str, str]]]:
+    dropped = [{"ticker": t, "reason": reason} for t in df.loc[mask, "_ticker"]]
+    return df.loc[~mask], dropped
+
+
 def _download_close(symbols: list[str], cfg: dict) -> tuple[pd.DataFrame, list[str]]:
     got, missing = [], []
     size = int(cfg.get("batch_size", 100))
-    for i in range(0, len(symbols), size):
+    total_batches = (len(symbols) + size - 1) // size
+    for batch_no, i in enumerate(range(0, len(symbols), size), start=1):
         batch = symbols[i : i + size]
         data = pd.DataFrame()
         for attempt in range(int(cfg.get("retries", 2)) + 1):
@@ -112,6 +169,15 @@ def _download_close(symbols: list[str], cfg: dict) -> tuple[pd.DataFrame, list[s
         close = _close_frame(data, batch)
         got.append(close)
         missing += [t for t in batch if t not in close.columns]
+        logger.info(
+            "batch %d/%d processed=%d/%d loaded=%d missing_total=%d",
+            batch_no,
+            total_batches,
+            min(i + size, len(symbols)),
+            len(symbols),
+            close.shape[1],
+            len(missing),
+        )
     raw = pd.concat(got, axis=1) if got else pd.DataFrame()
     raw = raw.loc[:, ~raw.columns.duplicated()]
     raw.index = pd.to_datetime(raw.index, utc=True).normalize()

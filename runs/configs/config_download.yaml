@@ -1,17 +1,32 @@
 input:
-  screener_path: runs/data/nasdaq_screener_1772353567950.csv
+  screener_path: runs/data/nasdaq_screener_1779374047283.csv
   symbol_col: Symbol
   etf_filter:
     enabled: true
     column: null
     exclude_values: ["1", "true", "yes", "y", "etf", "fund"]
+  security_filter:
+    enabled: true
+    name_column: Name
+    exclude_name_patterns:
+      - '\bRights?\b'
+      - '\bWarrants?\b'
+      - '\bUnits?\b'
+      - '\bPreferred\b'
+      - '\bNotes?\b'
+      - '\bStructured Products?\b'
+      - '\bTrust Securities\b'
+    exclude_symbol_patterns:
+      - '\^'
+    exclude_column_values:
+      Industry: ["Blank Checks"]
 
 download:
-  start: "2020-03-01"
-  end: "2026-03-01"
-  batch_size: 50
-  retries: 2
-  pause_seconds: 3.0
+  start: "2020-01-01"
+  end: "2026-01-01"
+  batch_size: 25
+  retries: 3
+  pause_seconds: 6.0
 
 quality:
   min_coverage: 0.95

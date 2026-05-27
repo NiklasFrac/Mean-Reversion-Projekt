@@ -49,6 +49,61 @@ def test_screener_filters_hard_etf_column_only(tmp_path, caplog) -> None:
     assert "ETF filter skipped" in caplog.text
 
 
+def test_screener_filters_configured_structured_securities(tmp_path) -> None:
+    screener = tmp_path / "s.csv"
+    pd.DataFrame(
+        {
+            "Symbol": ["AAPL", "AACBR", "AACIU", "AACI", "GPCR", "KTN", "ABR^D"],
+            "Name": [
+                "Apple Inc. Common Stock",
+                "Artius II Acquisition Inc. Rights",
+                "Artius II Acquisition Inc. Units",
+                "Armada Acquisition Corp. III Class A Ordinary Share",
+                "Structure Therapeutics Inc. American Depositary Shares",
+                "Structured Products Corp Trust Securities",
+                "Arbor Realty Trust Preferred Stock",
+            ],
+            "Industry": [
+                "Computer Manufacturing",
+                "",
+                "",
+                "Blank Checks",
+                "Biotechnology: Pharmaceutical Preparations",
+                "Finance: Consumer Services",
+                "",
+            ],
+        }
+    ).to_csv(screener, index=False)
+    cfg = {
+        "input": {
+            "screener_path": screener,
+            "symbol_col": "Symbol",
+            "security_filter": {
+                "enabled": True,
+                "name_column": "Name",
+                "exclude_name_patterns": [
+                    r"\bRights?\b",
+                    r"\bUnits?\b",
+                    r"\bStructured Products?\b",
+                    r"\bPreferred\b",
+                    r"\bTrust Securities\b",
+                ],
+                "exclude_symbol_patterns": [r"\^"],
+                "exclude_column_values": {"Industry": ["Blank Checks"]},
+            },
+        }
+    }
+    symbols, dropped = dl._read_symbols(cfg)
+    assert symbols == ["AAPL", "GPCR"]
+    assert {r["ticker"]: r["reason"] for r in dropped} == {
+        "AACBR": "security_filtered",
+        "AACIU": "security_filtered",
+        "AACI": "security_filtered",
+        "KTN": "security_filtered",
+        "ABR^D": "security_filtered",
+    }
+
+
 def test_download_extracts_close_and_marks_missing(monkeypatch) -> None:
     calls = {"n": 0}
     idx = pd.date_range("2024-01-01", periods=2)

@@ -11,61 +11,14 @@ import pytest
 import backtest.optimize as optimize_mod
 from backtest.config import (
     BOConfig,
-    BOCVConfig,
     CostsConfig,
     MarkovConfig,
     RiskConfig,
     StrategyConfig,
 )
-from backtest.optimize import BAD_SCORE, _bayes_or_random, _with_params, blocked_folds
+from backtest.optimize import BAD_SCORE, _bayes_or_random, _with_params
 from backtest.strategy import StrategyOutput
 from backtest.walkforward import Window
-
-
-def test_blocked_folds_sort_dedupe_and_keep_train_test_disjoint() -> None:
-    idx = pd.DatetimeIndex(
-        [
-            "2024-01-05",
-            "2024-01-01",
-            "2024-01-03",
-            "2024-01-03",
-            "2024-01-08",
-            "2024-01-02",
-            "2024-01-07",
-            "2024-01-06",
-            "2024-01-04",
-        ]
-    )
-
-    folds = blocked_folds(idx, BOConfig(cv=BOCVConfig(n_blocks=4, k_test_blocks=1)))
-
-    assert len(folds) == 4
-    for train, test in folds:
-        assert train.intersection(test).empty
-        assert test.equals(pd.date_range(test[0], test[-1], freq="D"))
-
-
-def test_blocked_folds_apply_purge_and_embargo() -> None:
-    idx = pd.date_range("2024-01-01", periods=12, freq="D")
-    bo = BOConfig(
-        cv=BOCVConfig(n_blocks=4, k_test_blocks=1, purge=1, embargo=2.0)
-    )
-
-    train, test = blocked_folds(idx, bo)[0]
-
-    assert test.equals(pd.DatetimeIndex([idx[1]]))
-    assert train.min() == idx[5]
-    assert len(train.intersection(idx[:5])) == 0
-
-
-def test_blocked_folds_skip_empty_tests_after_purge() -> None:
-    idx = pd.date_range("2024-01-01", periods=10, freq="D")
-
-    folds = blocked_folds(
-        idx, BOConfig(cv=BOCVConfig(n_blocks=5, k_test_blocks=1, purge=1))
-    )
-
-    assert folds == []
 
 
 def test_with_params_maps_known_fields_and_preserves_rest() -> None:
@@ -75,7 +28,7 @@ def test_with_params_maps_known_fields_and_preserves_rest() -> None:
         stop_z=4.0,
         z_window=30,
         z_min_periods=7,
-        max_hold_days=40,
+        max_hold_half_life_multiplier=1.7,
         cooldown_days=3,
     )
     markov = MarkovConfig(
@@ -103,7 +56,10 @@ def test_with_params_maps_known_fields_and_preserves_rest() -> None:
     assert updated_strategy.exit_z == 0.25
     assert updated_strategy.stop_z == 2.8
     assert updated_strategy.z_window == strategy.z_window
-    assert updated_strategy.max_hold_days == strategy.max_hold_days
+    assert (
+        updated_strategy.max_hold_half_life_multiplier
+        == strategy.max_hold_half_life_multiplier
+    )
     assert updated_markov.min_revert_prob == 0.9
     assert updated_markov.horizon_days == 3
     assert updated_markov.min_train_observations == markov.min_train_observations
@@ -225,12 +181,12 @@ def test_optimize_params_returns_original_configs_when_disabled_or_no_space(
     assert best == {}
 
 
-def test_optimize_params_orchestrates_objective_folds(
+def test_optimize_params_scores_each_candidate_on_full_train_window(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     prices = _prices()
     pairs = {"AAA-BBB": ("AAA", "BBB")}
-    risk = RiskConfig(max_open_pairs=1, max_pair_weight=0.5)
+    risk = RiskConfig(max_pair_weight=0.5)
     costs = CostsConfig(fee_bps=1.0, slippage_bps=0.5)
     order: list[str] = []
     baseline_calls: list[tuple[Window, StrategyConfig, MarkovConfig]] = []
@@ -269,6 +225,10 @@ def test_optimize_params_orchestrates_objective_folds(
         order.append("baseline")
         assert prices_arg is prices
         assert pairs_arg is pairs
+        assert fold.train_start == _window().train_start
+        assert fold.test_start == _window().train_start
+        assert fold.train_end == _window().train_end
+        assert fold.test_end == _window().train_end
         baseline_calls.append((fold, strategy, markov))
         idx = pd.date_range(fold.test_start, fold.test_end, freq="D")
         return StrategyOutput(
@@ -276,14 +236,6 @@ def test_optimize_params_orchestrates_objective_folds(
             zscores=pd.DataFrame({"AAA-BBB": [strategy.entry_z] * len(idx)}, index=idx),
             betas={"AAA-BBB": 2.0},
         )
-
-    def fake_cap_positions(
-        positions: pd.DataFrame, zscores: pd.DataFrame, risk_arg: RiskConfig
-    ) -> pd.DataFrame:
-        order.append("cap")
-        assert risk_arg is risk
-        assert positions.index.equals(zscores.index)
-        return positions.astype("int8")
 
     def fake_engine(
         prices_arg: pd.DataFrame,
@@ -311,7 +263,6 @@ def test_optimize_params_orchestrates_objective_folds(
     risk_obj = risk
     monkeypatch.setattr(optimize_mod, "_bayes_or_random", fake_optimizer)
     monkeypatch.setattr(optimize_mod, "run_baseline", fake_baseline)
-    monkeypatch.setattr(optimize_mod, "cap_positions", fake_cap_positions)
     monkeypatch.setattr(optimize_mod, "run_engine", fake_engine)
 
     best_strategy, best_markov, trials, best = optimize_mod.optimize_params(
@@ -331,22 +282,18 @@ def test_optimize_params_orchestrates_objective_folds(
                 "min_revert_prob": (0.6, 0.9),
                 "horizon_days": (2, 4),
             },
-            cv=BOCVConfig(n_blocks=4, k_test_blocks=1),
         ),
         initial_capital=250_000.0,
         seed=42,
     )
 
-    folds = blocked_folds(
-        prices.index, BOConfig(cv=BOCVConfig(n_blocks=4, k_test_blocks=1))
-    )
-    assert len(baseline_calls) == len(folds) * 2
+    assert len(baseline_calls) == 2
     assert len(engine_calls) == len(baseline_calls)
-    assert order == ["baseline", "cap", "engine"] * len(baseline_calls)
-    assert {call[1].entry_z for call in baseline_calls[: len(folds)]} == {1.1}
-    assert {call[2].horizon_days for call in baseline_calls[: len(folds)]} == {2}
-    assert {call[1].entry_z for call in baseline_calls[len(folds) :]} == {1.8}
-    assert {call[2].horizon_days for call in baseline_calls[len(folds) :]} == {4}
+    assert order == ["baseline", "engine"] * len(baseline_calls)
+    assert baseline_calls[0][1].entry_z == 1.1
+    assert baseline_calls[0][2].horizon_days == 2
+    assert baseline_calls[1][1].entry_z == 1.8
+    assert baseline_calls[1][2].horizon_days == 4
 
     assert trials["score"].tolist() == [1.1, 1.8]
     assert trials["entry_z"].tolist() == [1.1, 1.8]
@@ -365,19 +312,29 @@ def test_optimize_params_orchestrates_objective_folds(
     }
 
 
-def test_optimize_params_records_bad_score_when_no_folds(
+def test_optimize_params_records_bad_score_for_invalid_score(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(optimize_mod, "blocked_folds", lambda index, bo: [])
-    monkeypatch.setattr(
-        optimize_mod,
-        "run_baseline",
-        lambda *args, **kwargs: pytest.fail("baseline should not run without folds"),
-    )
+    def fake_baseline(
+        prices_arg: pd.DataFrame,
+        pairs_arg: dict[str, tuple[str, str]],
+        fold: Window,
+        strategy: StrategyConfig,
+        markov: MarkovConfig,
+    ) -> StrategyOutput:
+        del prices_arg, pairs_arg, fold, strategy, markov
+        idx = _prices().index
+        return StrategyOutput(
+            positions=pd.DataFrame({"AAA-BBB": [1] * len(idx)}, index=idx),
+            zscores=pd.DataFrame({"AAA-BBB": [1.0] * len(idx)}, index=idx),
+            betas={"AAA-BBB": 2.0},
+        )
+
+    monkeypatch.setattr(optimize_mod, "run_baseline", fake_baseline)
     monkeypatch.setattr(
         optimize_mod,
         "run_engine",
-        lambda *args, **kwargs: pytest.fail("engine should not run without folds"),
+        lambda *args, **kwargs: SimpleNamespace(summary={"sharpe": np.nan}),
     )
 
     def fake_optimizer(objective, space, seed, init_points, n_iter):
