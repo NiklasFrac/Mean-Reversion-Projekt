@@ -1,6 +1,6 @@
 # Mean-Reversion Pair Backtest
 
-Kleines Research-Projekt fuer einen reproduzierbaren Pairs-Trading-Backtest: Daten laden, Paare vorfiltern, Walkforward-Fenster bauen, Mean-Reversion-Regeln testen und Ergebnisse als Dateien und Plots ablegen. Der Fokus liegt auf nachvollziehbarer Konfiguration statt Notebook-Glue.
+This repository contains a compact research pipeline for a pairs-trading backtest. It downloads price data, filters pair candidates, runs walk-forward tests, applies mean-reversion rules, and writes reproducible result files. The main intent is to keep the workflow readable and configuration-driven.
 
 ## Start
 
@@ -12,45 +12,45 @@ uv run python -m backtest.run --config runs/configs/config_backtest.yaml
 
 ## Download
 
-`download.runner_download` liest den Screener aus `runs/configs/config_download.yaml`, normalisiert Ticker, filtert unerwuenschte Securities und laedt Adjusted-Close-Daten via `yfinance`.
+`download.runner_download` reads the screener defined in `runs/configs/config_download.yaml`, normalizes tickers, filters unwanted securities, and downloads adjusted close data with `yfinance`.
 
-Zeitraum, Batches, Retry-Verhalten, Quality-Gates und Zielpfade stehen in `runs/configs/config_download.yaml`.
+The date range, batching, retry behavior, quality checks, and output paths are set in `runs/configs/config_download.yaml`.
 
 ## Pair Prefilter
 
-`backtest.pair_selection` sucht im Trainingsfenster nach Kandidaten mit passender Korrelation, Engle-Granger-Test, positiver Hedge-Ratio, Half-Life und Hurst-Wert.
+`backtest.pair_selection` selects candidate pairs inside each training window. The filter uses correlation, the Engle-Granger test, a positive hedge ratio, half-life, and the Hurst value.
 
-Alle Schwellen und die maximale Pair-Anzahl kommen aus `runs/configs/config_backtest.yaml`.
+All thresholds and the pair limit are defined in `runs/configs/config_backtest.yaml`.
 
 ## Walkforward
 
-`backtest.walkforward` trennt Train- und Test-Zeitraeume anhand der Backtest-Config. Pro Fenster werden Paare neu selektiert und Strategieparameter neu festgelegt.
+`backtest.walkforward` builds separate train and test windows from the backtest configuration. Pairs are selected again for each window, and strategy parameters can be updated per window.
 
-Fenstermodus, Laengen, Schrittweite sowie Start und Ende stehen in `runs/configs/config_backtest.yaml`.
+The window mode, lengths, step size, start, and end are set in `runs/configs/config_backtest.yaml`.
 
-## Mean Rev
+## Mean Reversion
 
-Die Strategie handelt den Spread eines Pairs ueber einen rollierenden Z-Score. Entries, Exits, Stops, Cooldown und maximale Haltedauer werden aus der Config gelesen.
+The strategy trades the spread of a selected pair using a rolling z-score. Entry, exit, stop, cooldown, and maximum holding logic are read from the config.
 
-Kosten und Positionsgewichtung sind ebenfalls config-getrieben.
+Costs and position sizing are also configuration-driven.
 
-## BO
+## Bayesian Optimization
 
-Wenn `bo.enabled` aktiv ist, optimiert `backtest.optimize` die Strategy-Parameter je Walkforward-Fenster auf dem Trainingsbereich. Der Suchraum und die Anzahl der Versuche stehen in `runs/configs/config_backtest.yaml`.
+If `bo.enabled` is active, `backtest.optimize` tunes selected strategy parameters on the training part of each walk-forward window. The search space and trial budget are defined in `runs/configs/config_backtest.yaml`.
 
-Falls Bayesian Optimization nicht verfuegbar ist, faellt der Code auf eine Random Search mit derselben Config zurueck.
+If Bayesian Optimization is not available, the code falls back to random search using the same config.
 
 ## Output
 
-Download-Outputs:
+Download outputs:
 
 - `raw_close.csv`
 - `filled_close.csv`
 - `dropped_tickers.csv`
 
-Die Pfade stehen in `runs/configs/config_download.yaml`.
+The output paths are defined in `runs/configs/config_download.yaml`.
 
-Backtest-Outputs im konfigurierten `output.dir`:
+Backtest outputs in the configured `output.dir`:
 
 - `summary.json`
 - `config_used.yaml`
