@@ -1,7 +1,5 @@
 # Mean-Reversion Pair Backtest
 
-This repository contains a compact research pipeline for a pairs-trading backtest. It downloads price data, filters pair candidates, runs walk-forward tests, applies mean-reversion rules, and writes reproducible result files. The main intent is to keep the workflow readable and configuration-driven.
-
 ## Start
 
 The primary workflow uses `uv`. If `uv` is not installed, use the existing
@@ -47,10 +45,6 @@ Costs and position sizing are also configuration-driven.
 ## Optimization
 
 If `bo.enabled` or `gridsearch.enabled` is active, `backtest.optimize` tunes selected strategy parameters on the training part of each walk-forward window. The search space and trial budget are defined in `runs/configs/config_backtest.yaml`.
-
-If Bayesian Optimization is not available, the code falls back to random search using the same config.
-
-Gridsearch uses the configured candidate lists directly.
 
 ## Output
 
