@@ -2,20 +2,25 @@ seed: 1508
 
 data:
   prices_path: "runs/data/filled_close.csv"
+  screener_path: "runs/data/nasdaq_screener_1779374047283.csv"
 
 pair_selection:
-  min_obs: 120          # dead 
-  min_corr: 0.75
+  min_corr: 0.80
   max_corr: 1.0
   max_eg_pvalue: 0.05
-  min_half_life: 10
-  max_half_life: 30.0
+  fdr_enabled: true
+  fdr_alpha: 0.05
+  use_half_life_filter: true
+  use_hurst_filter: true
+  min_half_life: 3
+  max_half_life: 20.0
   max_hurst: 0.45
-  max_pairs: 30
+  max_pairs: 10
+
 
 backtest:
-  initial_capital: 1000000.0
-  start: "2022-01-01"
+  initial_capital: 100000.0
+  start: "2023-01-01"
   end: "2026-01-01"
   walkforward:
     enabled: true
@@ -26,43 +31,36 @@ backtest:
 
 strategy:
   entry_z: 1.5
-  exit_z: 0.0
-  stop_z: 3.0
-  z_window: 20
-  z_min_periods: 5
-  max_hold_half_life_multiplier: 1.5
+  exit_z: -0.5
+  stop_z: 2.5
+  z_window_multiplier: 2.0
+  max_hold_half_life_multiplier: 2
   cooldown_days: 1
 
-markov:
-  enabled: true
-  horizon_days: 25
-  min_revert_prob: 0.80
-  min_train_observations: 30
-  min_state_observations: 5
-  transition_smoothing: 0.0
-  neutral_z: 0.5
-  entry_z: null
-
 risk:
-  max_pair_weight: 0.05
-  max_drawdown: 1.0
+  max_pair_weight: 0.1
 
 costs:
-  fee_bps: 1.0
-  slippage_bps: 0.5
+  cost_bps: 3
 
 bo:
-  enabled: false
+  enabled: true
   init_points: 40
   n_iter: 150
+  validation_fraction: 0.3
   ranges:
-    entry_z: [1.5, 2.5]
-    exit_z: [0.0, 0.5]
-    stop_z: [3.0, 4.0]
-    min_revert_prob: [0.60, 1.0]
-    horizon_days: [10, 50]
+    entry_z: [1.0, 2.5]
+    exit_z: [-0.5, 0.5]
+    stop_z: [3.0, 3.5]
+
+gridsearch:
+  enabled: false
+  values:
+    entry_z: [1.5, 1.75, 2.0]
+    exit_z: [0.0, 0.25, 0.5, 0.75] 
+    stop_z: [2.5, 2.75, 3.0]
 output:
-  dir: "runs/results/backtest"
+  dir: "runs/results"
 
 logging:
   level: "INFO"

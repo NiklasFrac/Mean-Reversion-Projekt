@@ -4,13 +4,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-import backtest.strategy as strategy_mod
-from backtest.config import MarkovConfig, StrategyConfig
+from backtest.config import StrategyConfig
+from backtest.pair_selection import PairMeta
 from backtest.strategy import (
     WindowPlan,
     build_continuous_signals,
-    estimate_beta,
-    estimate_betas,
+    log_residual_spread,
     positions_from_z,
     rolling_zscore,
     run_baseline,
@@ -18,67 +17,23 @@ from backtest.strategy import (
 from backtest.walkforward import Window
 
 
-def test_estimate_beta_uses_intercept_and_complete_rows() -> None:
-    idx = pd.date_range("2024-01-01", periods=6, freq="D")
-    x = pd.Series([1.0, 2.0, 3.0, np.nan, 5.0, 6.0], index=idx)
-    y = pd.Series([12.0, 14.0, np.nan, 18.0, 20.0, 22.0], index=idx)
+def test_log_residual_spread_uses_pair_metadata_alpha_and_beta() -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    residual = pd.Series([0.0, 0.2, -0.1, 0.4, -0.3], index=idx)
+    alpha, beta = 0.7, 1.4
+    prices = _prices_from_log_residuals(idx, {"AAA-BBB": residual}, alpha, beta)
+    meta = PairMeta("AAA", "BBB", alpha, beta, 3.0)
 
-    assert np.isclose(estimate_beta(y, x), 2.0)
+    spread = log_residual_spread(prices, idx, meta)
 
-
-@pytest.mark.parametrize(
-    ("x_values", "y_values"),
-    [
-        ([1.0], [2.0]),
-        ([1.0, 1.0, 1.0], [1.0, 2.0, 3.0]),
-        ([1.0, 2.0, 3.0], [2.0, 2.0, 2.0]),
-        ([1.0, 2.0, 3.0], [5.0, 3.0, 1.0]),
-        ([1.0, 2.0, 3.0], [1.0, 2.0, 1.0]),
-    ],
-)
-def test_estimate_beta_rejects_unusable_or_nonpositive_relationships(
-    x_values: list[float], y_values: list[float]
-) -> None:
-    idx = pd.date_range("2024-01-01", periods=len(x_values), freq="D")
-    x = pd.Series(x_values, index=idx)
-    y = pd.Series(y_values, index=idx)
-
-    assert estimate_beta(y, x) is None
-
-
-def test_estimate_betas_filters_invalid_pairs_in_train_window() -> None:
-    idx = pd.date_range("2024-01-01", periods=6, freq="D")
-    x = pd.Series(np.arange(1.0, 7.0), index=idx)
-    prices = pd.DataFrame(
-        {
-            "AAA": 5.0 + 2.0 * x,
-            "BBB": x,
-            "FLAT": 10.0,
-            "NEG": 20.0 - x,
-        },
-        index=idx,
-    )
-    window = Window(0, idx[0], idx[3], idx[4], idx[5])
-
-    betas = estimate_betas(
-        prices,
-        {
-            "AAA-BBB": ("AAA", "BBB"),
-            "FLAT-BBB": ("FLAT", "BBB"),
-            "NEG-BBB": ("NEG", "BBB"),
-        },
-        window,
-    )
-
-    assert set(betas) == {"AAA-BBB"}
-    assert np.isclose(betas["AAA-BBB"], 2.0)
+    pd.testing.assert_series_equal(spread, residual.rename("spread"), rtol=1e-12)
 
 
 def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() -> None:
     idx = pd.date_range("2024-01-01", periods=4, freq="D")
     spread = pd.Series([1.0, 2.0, 3.0, 100.0], index=idx)
 
-    z = rolling_zscore(spread, window=2, min_periods=2)
+    z = rolling_zscore(spread, window=2)
 
     assert z.name == "z"
     assert z.iloc[:2].isna().all()
@@ -86,7 +41,7 @@ def test_rolling_zscore_is_past_only_and_handles_insufficient_or_flat_history() 
     assert np.isclose(z.iloc[3], (100.0 - 2.5) / 0.5)
 
     flat_history = pd.Series([1.0, 1.0, 2.0], index=idx[:3])
-    assert pd.isna(rolling_zscore(flat_history, window=2, min_periods=2).iloc[-1])
+    assert pd.isna(rolling_zscore(flat_history, window=2).iloc[-1])
 
 
 @pytest.mark.parametrize(
@@ -154,25 +109,6 @@ def test_positions_from_z_handles_core_state_transitions(
     assert positions.tolist() == expected
 
 
-def test_positions_from_z_gate_controls_new_entries_only() -> None:
-    idx = pd.date_range("2024-01-01", periods=7, freq="D")
-    cfg = StrategyConfig(
-        entry_z=1.0, exit_z=0.2, stop_z=3.0, cooldown_days=0
-    )
-    z = pd.Series([-1.2, -0.5, -1.2, -0.8, 0.1, 1.2, 0.0], index=idx)
-    gate = pd.Series([False, True, True, False, False, np.nan, True], index=idx)
-
-    assert positions_from_z(z, cfg, gate, max_hold_days=10).tolist() == [
-        0,
-        0,
-        1,
-        1,
-        0,
-        -1,
-        0,
-    ]
-
-
 def test_positions_from_z_uses_max_hold_override() -> None:
     idx = pd.date_range("2024-01-01", periods=4, freq="D")
     cfg = StrategyConfig(
@@ -183,70 +119,103 @@ def test_positions_from_z_uses_max_hold_override() -> None:
     assert positions_from_z(z, cfg, max_hold_days=2).tolist() == [1, 1, 0, 0]
 
 
-def test_run_baseline_filters_pairs_and_applies_markov_gate(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_run_baseline_filters_pairs_and_generates_zscore_positions() -> None:
     idx = pd.date_range("2024-01-01", periods=7, freq="D")
-    x = pd.Series(np.arange(100.0, 107.0), index=idx)
-    prices = pd.DataFrame(
-        {
-            "AAA": 5.0 + 2.0 * x + [0.0, 1.0, 0.0, -1.0, -6.0, -6.0, -6.0],
-            "BBB": x,
-            "FLAT": 42.0,
-        },
-        index=idx,
+    residual = pd.Series([0.0, 1.0, 0.0, -1.0, -6.0, -6.0, -6.0], index=idx)
+    prices = _prices_from_log_residuals(
+        idx,
+        {"AAA-BBB": residual},
+        alpha=0.9,
+        beta=1.7,
     )
     window = Window(0, idx[0], idx[3], idx[4], idx[6])
     strategy = StrategyConfig(
         entry_z=1.0,
         exit_z=0.0,
         stop_z=99.0,
-        z_window=2,
-        z_min_periods=2,
         cooldown_days=0,
     )
-    calls = []
-
-    def block_gate(
-        z: pd.Series,
-        train: pd.DatetimeIndex,
-        test: pd.DatetimeIndex,
-        cfg: MarkovConfig,
-        *,
-        entry_z: float,
-        exit_z: float,
-    ) -> pd.Series:
-        calls.append((z, train, test, cfg, entry_z, exit_z))
-        return pd.Series(False, index=test)
-
-    monkeypatch.setattr(strategy_mod, "markov_gate", block_gate)
 
     out = run_baseline(
         prices,
         {
-            "AAA-BBB": ("AAA", "BBB"),
-            "FLAT-BBB": ("FLAT", "BBB"),
-            "MISSING-BBB": ("MISSING", "BBB"),
+            "AAA-BBB": PairMeta("AAA", "BBB", 0.9, 1.7, 2.0),
+            "MISSING-BBB": PairMeta("MISSING", "BBB", 0.0, 1.0, 2.0),
         },
         window,
         strategy,
-        MarkovConfig(enabled=True),
+        max_hold_days_by_pair={"AAA-BBB": 2},
     )
 
     assert out.positions.index.equals(idx[4:7])
     assert out.positions.columns.tolist() == ["AAA-BBB"]
     assert out.zscores.columns.tolist() == ["AAA-BBB"]
     assert out.positions["AAA-BBB"].dtype == np.dtype("int8")
-    assert out.positions["AAA-BBB"].eq(0).all()
+    assert out.positions["AAA-BBB"].tolist() == [1, 1, 0]
     assert set(out.betas) == {"AAA-BBB"}
-    assert np.isfinite(out.betas["AAA-BBB"])
+    assert out.betas["AAA-BBB"] == 1.7
+    expected_z = rolling_zscore(residual, 2).reindex(idx[4:7]).rename("AAA-BBB")
+    pd.testing.assert_series_equal(out.zscores["AAA-BBB"], expected_z, rtol=1e-12)
 
-    assert len(calls) == 1
-    _, train, test, _, entry_z, exit_z = calls[0]
-    assert train.equals(pd.DatetimeIndex(idx[:4]))
-    assert test.equals(pd.DatetimeIndex(idx[4:7]))
-    assert entry_z == strategy.entry_z
-    assert exit_z == strategy.exit_z
+
+def test_run_baseline_derives_z_window_from_half_life_multiplier() -> None:
+    idx = pd.date_range("2024-01-01", periods=7, freq="D")
+    residual = pd.Series([0.0, 1.0, 0.0, -1.0, -6.0, -6.0, -6.0], index=idx)
+    prices = _prices_from_log_residuals(idx, {"AAA-BBB": residual})
+    window = Window(0, idx[0], idx[3], idx[4], idx[6])
+    strategy = StrategyConfig(
+        entry_z=1.0,
+        exit_z=0.0,
+        stop_z=99.0,
+        z_window_multiplier=2.0,
+        cooldown_days=0,
+    )
+
+    out = run_baseline(
+        prices,
+        {"AAA-BBB": PairMeta("AAA", "BBB", 0.0, 1.0, 1.1)},
+        window,
+        strategy,
+    )
+
+    expected_z = rolling_zscore(residual, 3).reindex(idx[4:7]).rename("AAA-BBB")
+    pd.testing.assert_series_equal(out.zscores["AAA-BBB"], expected_z, rtol=1e-12)
+
+
+@pytest.mark.parametrize(
+    ("strategy", "meta", "match"),
+    [
+        (
+            StrategyConfig(z_window_multiplier=0.0),
+            PairMeta("AAA", "BBB", 0.0, 1.0, 2.0),
+            "z_window_multiplier",
+        ),
+        (
+            StrategyConfig(z_window_multiplier=np.nan),
+            PairMeta("AAA", "BBB", 0.0, 1.0, 2.0),
+            "z_window_multiplier",
+        ),
+        (
+            StrategyConfig(),
+            PairMeta("AAA", "BBB", 0.0, 1.0, 0.0),
+            "half_life",
+        ),
+        (
+            StrategyConfig(),
+            PairMeta("AAA", "BBB", 0.0, 1.0, np.nan),
+            "half_life",
+        ),
+    ],
+)
+def test_run_baseline_rejects_invalid_z_window_inputs(
+    strategy: StrategyConfig, meta: PairMeta, match: str
+) -> None:
+    idx = pd.date_range("2024-01-01", periods=5, freq="D")
+    prices = _prices_from_spreads(idx, {"AAA-BBB": [0.0, 1.0, 0.0, -1.0, -2.0]})
+    window = Window(0, idx[0], idx[2], idx[3], idx[-1])
+
+    with pytest.raises(ValueError, match=match):
+        run_baseline(prices, {"AAA-BBB": meta}, window, strategy)
 
 
 def test_continuous_signals_carry_unreselected_trade_and_force_final_exit() -> None:
@@ -259,6 +228,8 @@ def test_continuous_signals_carry_unreselected_trade_and_force_final_exit() -> N
     assert sig.positions.at[prices.index[3], pair] == 1
     assert sig.positions.at[prices.index[7], pair] == 1
     assert sig.positions.at[prices.index[-1], pair] == 0
+    assert sig.exit_reasons is not None
+    assert sig.exit_reasons.at[prices.index[-1], pair] == "forced_window_end"
 
 
 def test_continuous_signals_keep_entry_strategy_and_beta_after_reselection() -> None:
@@ -285,7 +256,11 @@ def test_continuous_signals_opens_all_valid_candidates() -> None:
             "C-XC": [0.0, 1.0, 0.5, -4.0, -4.0, -4.0, -4.0],
         },
     )
-    pairs = {"A-XA": ("A", "XA"), "B-XB": ("B", "XB"), "C-XC": ("C", "XC")}
+    pairs = {
+        "A-XA": PairMeta("A", "XA", 0.0, 1.0, 3.0),
+        "B-XB": PairMeta("B", "XB", 0.0, 1.0, 3.0),
+        "C-XC": PairMeta("C", "XC", 0.0, 1.0, 3.0),
+    }
     plan = WindowPlan(
         Window(0, idx[0], idx[2], idx[3], idx[-1]),
         pairs,
@@ -293,12 +268,8 @@ def test_continuous_signals_opens_all_valid_candidates() -> None:
             entry_z=1.0,
             exit_z=0.0,
             stop_z=99.0,
-            z_window=3,
-            z_min_periods=2,
             cooldown_days=0,
         ),
-        MarkovConfig(enabled=False),
-        {pair: 1.0 for pair in pairs},
         {pair: 100 for pair in pairs},
     )
 
@@ -309,9 +280,7 @@ def test_continuous_signals_opens_all_valid_candidates() -> None:
     assert sig.positions.at[idx[3], "C-XC"] == 1
 
 
-def test_continuous_signals_gate_and_cooldown_block_reentries(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_continuous_signals_cooldown_blocks_reentries() -> None:
     idx = pd.date_range("2024-01-01", periods=9, freq="D")
     prices = _prices_from_spreads(
         idx,
@@ -319,43 +288,26 @@ def test_continuous_signals_gate_and_cooldown_block_reentries(
     )
     plan = WindowPlan(
         Window(0, idx[0], idx[2], idx[3], idx[-1]),
-        {"AAA-BBB": ("AAA", "BBB")},
+        {"AAA-BBB": PairMeta("AAA", "BBB", 0.0, 1.0, 2.0)},
         StrategyConfig(
             entry_z=1.0,
             exit_z=0.2,
             stop_z=99.0,
-            z_window=2,
-            z_min_periods=2,
             cooldown_days=2,
         ),
-        MarkovConfig(enabled=True),
-        {"AAA-BBB": 1.0},
         {"AAA-BBB": 1},
     )
-
-    def block_first_entry(
-        z: pd.Series,
-        train: pd.DatetimeIndex,
-        test: pd.DatetimeIndex,
-        cfg: MarkovConfig,
-        *,
-        entry_z: float,
-        exit_z: float,
-    ) -> pd.Series:
-        del z, train, cfg, entry_z, exit_z
-        gate = pd.Series(True, index=test)
-        gate.iloc[0] = False
-        return gate
-
-    monkeypatch.setattr(strategy_mod, "markov_gate", block_first_entry)
 
     sig = build_continuous_signals(prices, [plan])
 
     pair = "AAA-BBB"
-    assert sig.positions.at[idx[3], pair] == 0
-    assert sig.positions.at[idx[5], pair] == 1
+    assert sig.positions.at[idx[3], pair] == 1
+    assert sig.positions.at[idx[4], pair] == 0
+    assert sig.positions.at[idx[5], pair] == 0
     assert sig.positions.at[idx[6], pair] == 0
-    assert sig.positions.at[idx[7], pair] == 0
+    assert sig.positions.at[idx[7], pair] == 1
+    assert sig.exit_reasons is not None
+    assert sig.exit_reasons.at[idx[4], pair] == "timeout"
 
 
 def _continuous_prices() -> pd.DataFrame:
@@ -389,21 +341,17 @@ def _manual_plans(
     second_beta: float = 1.0,
 ) -> list[WindowPlan]:
     idx = prices.index
-    pair = {"AAA-BBB": ("AAA", "BBB")}
+    pair = {"AAA-BBB": PairMeta("AAA", "BBB", 0.0, 1.0, 3.0)}
     first = StrategyConfig(
         entry_z=1.5,
         exit_z=0.0,
         stop_z=99.0,
-        z_window=3,
-        z_min_periods=2,
         cooldown_days=1,
     )
     second = StrategyConfig(
         entry_z=1.5,
         exit_z=0.0,
         stop_z=99.0,
-        z_window=3,
-        z_min_periods=2,
         cooldown_days=1,
     )
     return [
@@ -411,16 +359,14 @@ def _manual_plans(
             Window(0, idx[0], idx[2], idx[3], idx[5]),
             pair,
             first,
-            MarkovConfig(enabled=False),
-            {"AAA-BBB": 1.0},
             {"AAA-BBB": first_max_hold},
         ),
         WindowPlan(
             Window(1, idx[0], idx[5], idx[6], idx[-1]),
-            pair if second_pairs else {},
+            {"AAA-BBB": PairMeta("AAA", "BBB", 0.0, second_beta, 3.0)}
+            if second_pairs
+            else {},
             second,
-            MarkovConfig(enabled=False),
-            {"AAA-BBB": second_beta} if second_pairs else {},
             {"AAA-BBB": 1} if second_pairs else {},
         ),
     ]
@@ -429,11 +375,25 @@ def _manual_plans(
 def _prices_from_spreads(
     idx: pd.DatetimeIndex, spreads: dict[str, list[float]]
 ) -> pd.DataFrame:
+    return _prices_from_log_residuals(
+        idx,
+        {
+            pair: pd.Series(spread_values, index=idx, dtype=float)
+            for pair, spread_values in spreads.items()
+        },
+    )
+
+
+def _prices_from_log_residuals(
+    idx: pd.DatetimeIndex,
+    residuals: dict[str, pd.Series],
+    alpha: float = 0.0,
+    beta: float = 1.0,
+) -> pd.DataFrame:
     prices = pd.DataFrame(index=idx)
-    for pair, spread_values in spreads.items():
+    for pair, residual in residuals.items():
         y_name, x_name = pair.split("-")
-        x = pd.Series(100.0 + np.arange(len(idx)), index=idx)
-        spread = pd.Series(spread_values, index=idx, dtype=float)
-        prices[x_name] = x
-        prices[y_name] = x + spread
+        x_log = np.log(pd.Series(100.0 + np.arange(len(idx)), index=idx))
+        prices[x_name] = np.exp(x_log)
+        prices[y_name] = np.exp(alpha + beta * x_log + residual)
     return prices

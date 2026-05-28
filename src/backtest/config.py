@@ -10,14 +10,18 @@ import yaml
 @dataclass(frozen=True)
 class DataConfig:
     prices_path: Path
+    screener_path: Path | None = None
 
 
 @dataclass(frozen=True)
 class PairSelectionConfig:
-    min_obs: int = 120
     min_corr: float = 0.80
     max_corr: float = 1.0
     max_eg_pvalue: float = 0.05
+    fdr_enabled: bool = False
+    fdr_alpha: float = 0.05
+    use_half_life_filter: bool = True
+    use_hurst_filter: bool = True
     min_half_life: float = 2.0
     max_half_life: float = 60.0
     max_hurst: float = 0.45
@@ -46,34 +50,19 @@ class StrategyConfig:
     entry_z: float = 1.0
     exit_z: float = 0.0
     stop_z: float = 3.0
-    z_window: int = 45
-    z_min_periods: int = 5
+    z_window_multiplier: float = 1.0
     max_hold_half_life_multiplier: float = 1.5
     cooldown_days: int = 1
 
 
 @dataclass(frozen=True)
-class MarkovConfig:
-    enabled: bool = True
-    horizon_days: int = 60
-    min_revert_prob: float = 0.70
-    min_train_observations: int = 30
-    min_state_observations: int = 5
-    transition_smoothing: float = 0.0
-    neutral_z: float | None = None
-    entry_z: float | None = None
-
-
-@dataclass(frozen=True)
 class RiskConfig:
     max_pair_weight: float = 0.05
-    max_drawdown: float = 0.25
 
 
 @dataclass(frozen=True)
 class CostsConfig:
-    fee_bps: float = 1.0
-    slippage_bps: float = 0.0
+    cost_bps: float = 1.0
 
 
 @dataclass(frozen=True)
@@ -81,7 +70,14 @@ class BOConfig:
     enabled: bool = False
     init_points: int = 5
     n_iter: int = 15
+    validation_fraction: float = 0.3
     ranges: dict[str, tuple[float, float]] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class GridSearchConfig:
+    enabled: bool = False
+    values: dict[str, list[float]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -101,10 +97,10 @@ class Config:
     pair_selection: PairSelectionConfig = field(default_factory=PairSelectionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
-    markov: MarkovConfig = field(default_factory=MarkovConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     costs: CostsConfig = field(default_factory=CostsConfig)
     bo: BOConfig = field(default_factory=BOConfig)
+    gridsearch: GridSearchConfig = field(default_factory=GridSearchConfig)
     output: OutputConfig = field(default_factory=OutputConfig)
     logging: LoggingConfig = field(default_factory=LoggingConfig)
 
@@ -114,9 +110,17 @@ def load_config(path: str | Path) -> Config:
     data = raw.get("data") or {}
     bt = raw.get("backtest") or {}
     bo = raw.get("bo") or {}
+    gridsearch = raw.get("gridsearch") or {}
+    if bool(bo.get("enabled", False)) and bool(gridsearch.get("enabled", False)):
+        raise ValueError("bo.enabled and gridsearch.enabled cannot both be true")
     return Config(
         seed=int(raw.get("seed", 1508)),
-        data=DataConfig(prices_path=Path(data["prices_path"])),
+        data=DataConfig(
+            prices_path=Path(data["prices_path"]),
+            screener_path=Path(data["screener_path"])
+            if data.get("screener_path")
+            else None,
+        ),
         pair_selection=PairSelectionConfig(**(raw.get("pair_selection") or {})),
         backtest=BacktestConfig(
             initial_capital=float(bt.get("initial_capital", 100_000.0)),
@@ -125,14 +129,21 @@ def load_config(path: str | Path) -> Config:
             walkforward=WalkforwardConfig(**(bt.get("walkforward") or {})),
         ),
         strategy=StrategyConfig(**(raw.get("strategy") or {})),
-        markov=MarkovConfig(**(raw.get("markov") or {})),
         risk=RiskConfig(**(raw.get("risk") or {})),
         costs=CostsConfig(**(raw.get("costs") or {})),
         bo=BOConfig(
             enabled=bool(bo.get("enabled", False)),
             init_points=int(bo.get("init_points", 5)),
             n_iter=int(bo.get("n_iter", 15)),
+            validation_fraction=float(bo.get("validation_fraction", 0.3)),
             ranges={k: tuple(v) for k, v in (bo.get("ranges") or {}).items()},
+        ),
+        gridsearch=GridSearchConfig(
+            enabled=bool(gridsearch.get("enabled", False)),
+            values={
+                k: [float(x) for x in v]
+                for k, v in (gridsearch.get("values") or {}).items()
+            },
         ),
         output=OutputConfig(
             dir=Path((raw.get("output") or {}).get("dir", "runs/results/backtest"))

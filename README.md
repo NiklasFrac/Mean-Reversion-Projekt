@@ -4,10 +4,18 @@ This repository contains a compact research pipeline for a pairs-trading backtes
 
 ## Start
 
+The primary workflow uses `uv`. If `uv` is not installed, use the existing
+virtual environment or run the modules with any Python environment that has the
+project dependencies installed.
+
 ```powershell
 uv sync --extra backtest
 uv run python -m download.runner_download --cfg runs/configs/config_download.yaml
 uv run python -m backtest.run --config runs/configs/config_backtest.yaml
+
+# fallback when using the local virtual environment
+.\.venv\Scripts\python.exe -m download.runner_download --cfg runs/configs/config_download.yaml
+.\.venv\Scripts\python.exe -m backtest.run --config runs/configs/config_backtest.yaml
 ```
 
 ## Download
@@ -19,6 +27,8 @@ The date range, batching, retry behavior, quality checks, and output paths are s
 ## Pair Prefilter
 
 `backtest.pair_selection` selects candidate pairs inside each training window. The filter uses correlation, the Engle-Granger test, a positive hedge ratio, half-life, and the Hurst value.
+
+If a screener file is configured, pair selection loads sector data and only tests pairs inside the same sector group.
 
 All thresholds and the pair limit are defined in `runs/configs/config_backtest.yaml`.
 
@@ -34,11 +44,13 @@ The strategy trades the spread of a selected pair using a rolling z-score. Entry
 
 Costs and position sizing are also configuration-driven.
 
-## Bayesian Optimization
+## Optimization
 
-If `bo.enabled` is active, `backtest.optimize` tunes selected strategy parameters on the training part of each walk-forward window. The search space and trial budget are defined in `runs/configs/config_backtest.yaml`.
+If `bo.enabled` or `gridsearch.enabled` is active, `backtest.optimize` tunes selected strategy parameters on the training part of each walk-forward window. The search space and trial budget are defined in `runs/configs/config_backtest.yaml`.
 
 If Bayesian Optimization is not available, the code falls back to random search using the same config.
+
+Gridsearch uses the configured candidate lists directly.
 
 ## Output
 
@@ -54,8 +66,10 @@ Backtest outputs in the configured `output.dir`:
 
 - `summary.json`
 - `config_used.yaml`
-- `daily.csv`, `equity.csv`
+- `daily.csv`
 - `positions.csv`, `weights.csv`, `trades.csv`
 - `windows.csv`, `selected_pairs.csv`
 - `bo_trials.csv`, `bo_best.json`
-- Plots: `equity.png`, `drawdown.png`, `params.png`
+- `wf_debug.json`
+- `backtest.log`
+- Plots: `equity.png`, `drawdown.png`

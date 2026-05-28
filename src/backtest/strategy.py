@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 
 import numpy as np
 import pandas as pd
 
-from backtest.config import MarkovConfig, StrategyConfig
-from backtest.markov import markov_gate
+from backtest.config import StrategyConfig
+from backtest.pair_selection import PairMeta
 from backtest.walkforward import Window
 
 
@@ -15,24 +16,22 @@ class StrategyOutput:
     positions: pd.DataFrame
     zscores: pd.DataFrame
     betas: dict[str, float] | pd.DataFrame
+    exit_reasons: pd.DataFrame | None = None
 
 
 @dataclass(frozen=True)
 class WindowPlan:
     window: Window
-    pairs: dict[str, tuple[str, str]]
+    pairs: dict[str, PairMeta]
     strategy: StrategyConfig
-    markov: MarkovConfig
-    betas: dict[str, float]
     max_hold_days_by_pair: dict[str, int] = field(default_factory=dict)
 
 
 def run_baseline(
     prices: pd.DataFrame,
-    pairs: dict[str, tuple[str, str]],
+    pairs: dict[str, PairMeta],
     window: Window,
     strategy: StrategyConfig,
-    markov: MarkovConfig,
     max_hold_days_by_pair: dict[str, int] | None = None,
 ) -> StrategyOutput:
     idx = prices.loc[window.train_start : window.test_end].index
@@ -40,38 +39,19 @@ def run_baseline(
     pos, zcols, betas = {}, {}, {}
     max_hold_days_by_pair = max_hold_days_by_pair or {}
 
-    for pair, (y_name, x_name) in pairs.items():
-        if y_name not in prices or x_name not in prices:
+    for pair, meta in pairs.items():
+        if meta.y not in prices or meta.x not in prices:
             continue
-        y = prices[y_name].reindex(idx).ffill()
-        x = prices[x_name].reindex(idx).ffill()
-        train = (
-            pd.DataFrame({"y": y, "x": x})
-            .loc[window.train_start : window.train_end]
-            .dropna()
-        )
-        beta = estimate_beta(train["y"], train["x"]) if len(train) >= 2 else None
-        if beta is None:
-            continue
-        spread = (y - beta * x).rename("spread")
-        z = rolling_zscore(spread, strategy.z_window, strategy.z_min_periods)
-        gate = markov_gate(
-            z,
-            pd.DatetimeIndex(train.index),
-            pd.DatetimeIndex(eval_idx),
-            markov,
-            entry_z=strategy.entry_z,
-            exit_z=strategy.exit_z,
-        )
+        spread = log_residual_spread(prices, idx, meta)
+        z = rolling_zscore(spread, _z_window(meta, strategy))
         z_eval = z.reindex(eval_idx)
         pos[pair] = positions_from_z(
             z_eval,
             strategy,
-            gate,
             max_hold_days=max_hold_days_by_pair.get(pair),
         )
         zcols[pair] = z_eval
-        betas[pair] = float(beta)
+        betas[pair] = float(meta.beta)
 
     return StrategyOutput(
         positions=pd.DataFrame(pos, index=eval_idx).fillna(0).astype("int8"),
@@ -88,33 +68,29 @@ def build_continuous_signals(
     positions = pd.DataFrame(0, index=idx, columns=list(pairs), dtype="int8")
     zscores = pd.DataFrame(np.nan, index=idx, columns=list(pairs))
     betas = pd.DataFrame(np.nan, index=idx, columns=list(pairs))
+    exit_reasons = pd.DataFrame(pd.NA, index=idx, columns=list(pairs), dtype="object")
     zcache = _zcache(prices, plans, idx[-1])
     states, cooldowns = {}, {pair: 0 for pair in pairs}
 
     for plan_i, plan in enumerate(plans):
         test_idx = prices.loc[plan.window.test_start : plan.window.test_end].index
-        train_idx = prices.loc[plan.window.train_start : plan.window.train_end].index
-        gates = {
-            pair: markov_gate(
-                zcache[(plan_i, pair)],
-                pd.DatetimeIndex(train_idx),
-                pd.DatetimeIndex(test_idx),
-                plan.markov,
-                entry_z=plan.strategy.entry_z,
-                exit_z=plan.strategy.exit_z,
-            )
-            for pair in plan.pairs
-        }
         for ts in test_idx:
             final_day = ts == idx[-1]
             exited = _update_open(
-                ts, final_day, states, cooldowns, zcache, positions, zscores
+                ts,
+                final_day,
+                states,
+                cooldowns,
+                zcache,
+                positions,
+                zscores,
+                exit_reasons,
             )
             for pair, days in list(cooldowns.items()):
                 if pair not in states and pair not in exited and days > 0:
                     cooldowns[pair] = days - 1
             if not final_day:
-                _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache)
+                _open_new(ts, plan_i, plan, states, cooldowns, zcache)
             for pair, state in states.items():
                 if pd.isna(zscores.at[ts, pair]):
                     zscores.at[ts, pair] = zcache[(state["plan_i"], pair)].get(
@@ -122,40 +98,23 @@ def build_continuous_signals(
                     )
                 positions.at[ts, pair] = state["pos"]
                 betas.at[ts, pair] = state["beta"]
-    return StrategyOutput(positions, zscores, betas)
+    return StrategyOutput(positions, zscores, betas, exit_reasons)
 
 
-def estimate_betas(
-    prices: pd.DataFrame, pairs: dict[str, tuple[str, str]], window: Window
-) -> dict[str, float]:
-    out = {}
-    for pair, (y_name, x_name) in pairs.items():
-        train = prices[[y_name, x_name]].loc[window.train_start : window.train_end]
-        beta = estimate_beta(train[y_name], train[x_name])
-        if beta is not None:
-            out[pair] = beta
-    return out
+def log_residual_spread(
+    prices: pd.DataFrame, idx: pd.DatetimeIndex, meta: PairMeta
+) -> pd.Series:
+    y = prices[meta.y].reindex(idx).ffill()
+    x = prices[meta.x].reindex(idx).ffill()
+    spread = np.log(y) - (float(meta.alpha) + float(meta.beta) * np.log(x))
+    return spread.rename("spread")
 
 
-def estimate_beta(y: pd.Series, x: pd.Series) -> float | None:
-    df = pd.DataFrame({"y": y, "x": x}).dropna()
-    if len(df) < 2 or df["x"].std(ddof=0) <= 0 or df["y"].std(ddof=0) <= 0:
-        return None
-    mat = np.column_stack([np.ones(len(df)), df["x"].to_numpy(float)])
-    beta = float(np.linalg.lstsq(mat, df["y"].to_numpy(float), rcond=None)[0][1])
-    return (
-        beta
-        if np.isfinite(beta)
-        and beta > 0
-        and not np.isclose(beta, 0.0, rtol=0.0, atol=np.finfo(float).eps)
-        else None
-    )
-
-
-def rolling_zscore(spread: pd.Series, window: int, min_periods: int) -> pd.Series:
+def rolling_zscore(spread: pd.Series, window: int) -> pd.Series:
     base = pd.to_numeric(spread, errors="coerce").shift(1)
-    mean = base.rolling(int(window), min_periods=int(min_periods)).mean()
-    std = base.rolling(int(window), min_periods=int(min_periods)).std(ddof=0)
+    window = int(window)
+    mean = base.rolling(window, min_periods=window).mean()
+    std = base.rolling(window, min_periods=window).std(ddof=0)
     return ((spread - mean) / std.replace(0.0, np.nan)).rename("z")
 
 
@@ -165,46 +124,67 @@ def _zcache(
     out = {}
     for i, plan in enumerate(plans):
         idx = prices.loc[plan.window.train_start : final_day].index
-        for pair, (y_name, x_name) in plan.pairs.items():
-            y = prices[y_name].reindex(idx).ffill()
-            x = prices[x_name].reindex(idx).ffill()
-            spread = y - plan.betas[pair] * x
-            out[(i, pair)] = rolling_zscore(
-                spread, plan.strategy.z_window, plan.strategy.z_min_periods
-            )
+        for pair, meta in plan.pairs.items():
+            spread = log_residual_spread(prices, idx, meta)
+            out[(i, pair)] = rolling_zscore(spread, _z_window(meta, plan.strategy))
     return out
 
 
+def _z_window(meta: PairMeta, strategy: StrategyConfig) -> int:
+    multiplier = float(strategy.z_window_multiplier)
+    half_life = float(meta.half_life)
+    if not math.isfinite(multiplier) or multiplier <= 0:
+        raise ValueError("strategy.z_window_multiplier must be positive")
+    if not math.isfinite(half_life) or half_life <= 0:
+        raise ValueError("pair half_life must be positive")
+    window = multiplier * half_life
+    if not math.isfinite(window):
+        raise ValueError("strategy.z_window_multiplier * half_life must be finite")
+    return max(1, int(math.ceil(window)))
+
+
 def _update_open(
-    ts, final_day, states, cooldowns, zcache, positions, zscores
+    ts, final_day, states, cooldowns, zcache, positions, zscores, exit_reasons
 ) -> set[str]:
     exited = set()
     for pair, state in list(states.items()):
         z = zcache[(state["plan_i"], pair)].get(ts, np.nan)
         zscores.at[ts, pair] = z
         cfg = state["strategy"]
-        should_exit = final_day
-        if not should_exit:
+        should_exit = False
+        reason = None
+        if final_day:
+            should_exit = True
+            reason = "forced_window_end"
+        else:
             state["held"] += 1
             z_value = float(z)
             max_hold_days = state.get("max_hold_days")
             time_exit = (
                 max_hold_days is not None and state["held"] >= int(max_hold_days)
             )
-            should_exit = time_exit or (
-                np.isfinite(z_value)
-                and (abs(z_value) <= abs(cfg.exit_z) or abs(z_value) >= abs(cfg.stop_z))
-            )
+            stop_exit = np.isfinite(z_value) and abs(z_value) >= abs(cfg.stop_z)
+            normal_exit = np.isfinite(z_value) and abs(z_value) <= abs(cfg.exit_z)
+            if stop_exit:
+                should_exit = True
+                reason = "stop"
+            elif normal_exit:
+                should_exit = True
+                reason = "normal"
+            elif time_exit:
+                should_exit = True
+                reason = "timeout"
         if should_exit:
             cooldowns[pair] = int(state["strategy"].cooldown_days)
             exited.add(pair)
+            exit_reasons.at[ts, pair] = reason
             del states[pair]
         else:
             positions.at[ts, pair] = state["pos"]
     return exited
 
 
-def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache) -> None:
+def _open_new(ts, plan_i, plan, states, cooldowns, zcache) -> None:
     candidates = []
     entry, stop = abs(plan.strategy.entry_z), abs(plan.strategy.stop_z)
     for pair in plan.pairs:
@@ -212,8 +192,6 @@ def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache) -> None:
             continue
         z = zcache[(plan_i, pair)].get(ts, np.nan)
         prev = zcache[(plan_i, pair)].shift(1).get(ts, np.nan)
-        if not bool(gates[pair].get(ts, True)):
-            continue
         z_value = float(z)
         if not np.isfinite(z_value):
             continue
@@ -238,7 +216,7 @@ def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache) -> None:
             "pos": pos,
             "held": 0,
             "plan_i": plan_i,
-            "beta": plan.betas[pair],
+            "beta": plan.pairs[pair].beta,
             "strategy": plan.strategy,
             "max_hold_days": plan.max_hold_days_by_pair.get(pair),
         }
@@ -247,32 +225,27 @@ def _open_new(ts, plan_i, plan, gates, states, cooldowns, zcache) -> None:
 def positions_from_z(
     z: pd.Series,
     cfg: StrategyConfig,
-    gate: pd.Series | None = None,
     max_hold_days: int | None = None,
 ) -> pd.Series:
     out = pd.Series(0, index=z.index, dtype="int8")
     pos, held, cool_left, prev = 0, 0, 0, np.nan
     entry, exit_z, stop = abs(cfg.entry_z), abs(cfg.exit_z), abs(cfg.stop_z)
     max_hold_days = None if max_hold_days is None else int(max_hold_days)
-    gate = gate.reindex(z.index) if gate is not None else None
 
     for ts, raw in z.items():
         zt = float(raw) if pd.notna(raw) else np.nan
         if cool_left > 0:
             cool_left -= 1
         elif pos == 0:
-            ok = True if gate is None or pd.isna(gate.at[ts]) else bool(gate.at[ts])
             if (
-                ok
-                and np.isfinite(zt)
+                np.isfinite(zt)
                 and zt <= -entry
                 and zt > -stop
                 and (not np.isfinite(prev) or prev > -entry)
             ):
                 pos, held = 1, 0
             elif (
-                ok
-                and np.isfinite(zt)
+                np.isfinite(zt)
                 and zt >= entry
                 and zt < stop
                 and (not np.isfinite(prev) or prev < entry)
