@@ -38,6 +38,8 @@ def optimize_params(
 ) -> tuple[StrategyConfig, pd.DataFrame, dict[str, Any]]:
     if bo.enabled and gridsearch.enabled:
         raise ValueError("bo.enabled and gridsearch.enabled cannot both be true")
+    if bo.enabled:
+        _bayesian_optimizer_cls()
     space = {k: tuple(map(float, v)) for k, v in bo.ranges.items()}
     grid = {k: [float(x) for x in v] for k, v in gridsearch.values.items()}
     if gridsearch.enabled:
@@ -97,7 +99,7 @@ def optimize_params(
     if gridsearch.enabled:
         best_params, best_score = _grid_search(objective, grid)
     else:
-        best_params, best_score = _bayes_or_random(
+        best_params, best_score = _bayes_optimize(
             objective, space, seed, bo.init_points, bo.n_iter
         )
     best_strategy = _with_params(strategy, best_params)
@@ -120,25 +122,24 @@ def _with_params(strategy: StrategyConfig, params: dict[str, float]) -> Strategy
     )
 
 
-def _bayes_or_random(objective, space, seed, init_points, n_iter):
+def _bayes_optimize(objective, space, seed, init_points, n_iter):
+    BayesianOptimization = _bayesian_optimizer_cls()
+
+    opt = BayesianOptimization(f=objective, pbounds=space, random_state=seed, verbose=0)
+    opt.maximize(init_points=max(0, init_points), n_iter=max(0, n_iter))
+    best = opt.max or {"params": {}, "target": BAD_SCORE}
+    return dict(best["params"]), float(best["target"])
+
+
+def _bayesian_optimizer_cls():
     try:
         from bayes_opt import BayesianOptimization
-
-        opt = BayesianOptimization(
-            f=objective, pbounds=space, random_state=seed, verbose=0
-        )
-        opt.maximize(init_points=max(0, init_points), n_iter=max(0, n_iter))
-        best = opt.max or {"params": {}, "target": BAD_SCORE}
-        return dict(best["params"]), float(best["target"])
-    except Exception:
-        rng = np.random.default_rng(seed)
-        best_params, best_score = {}, BAD_SCORE
-        for _ in range(max(1, init_points + n_iter)):
-            params = {k: float(rng.uniform(lo, hi)) for k, (lo, hi) in space.items()}
-            score = objective(**params)
-            if score > best_score:
-                best_params, best_score = params, score
-        return best_params, best_score
+    except ImportError as exc:
+        raise RuntimeError(
+            "bo.enabled is true, but bayesian-optimization is not installed. "
+            "Install it with `uv sync --extra backtest`."
+        ) from exc
+    return BayesianOptimization
 
 
 def _grid_search(objective, values):

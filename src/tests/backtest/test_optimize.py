@@ -17,7 +17,7 @@ from backtest.config import (
     StrategyConfig,
     load_config,
 )
-from backtest.optimize import BAD_SCORE, _bayes_or_random, _grid_search, _with_params
+from backtest.optimize import BAD_SCORE, _grid_search, _with_params
 from backtest.pair_selection import PairMeta
 from backtest.strategy import StrategyOutput
 from backtest.walkforward import Window
@@ -105,59 +105,24 @@ gridsearch:
         load_config(cfg_path)
 
 
-def test_bayes_or_random_fallback_is_seeded_and_respects_ranges(
+def test_optimize_params_requires_bayes_dependency_when_bo_enabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    _force_random_fallback(monkeypatch)
+    _force_missing_bayes_opt(monkeypatch)
 
-    def run_once() -> tuple[dict[str, float], float, list[dict[str, float]]]:
-        calls: list[dict[str, float]] = []
-
-        def objective(**params: float) -> float:
-            calls.append(dict(params))
-            return params["entry_z"] * 10.0 + params["stop_z"]
-
-        best_params, best_score = _bayes_or_random(
-            objective,
-            {"entry_z": (1.0, 2.0), "stop_z": (2.0, 4.0)},
-            seed=123,
-            init_points=2,
-            n_iter=3,
+    with pytest.raises(RuntimeError, match="bo.enabled is true"):
+        optimize_mod.optimize_params(
+            _prices(),
+            {"AAA-BBB": PairMeta("AAA", "BBB", 0.0, 2.0, 2.0)},
+            _window(),
+            StrategyConfig(),
+            RiskConfig(),
+            CostsConfig(),
+            BOConfig(enabled=True, ranges={"entry_z": (1.0, 2.0)}),
+            GridSearchConfig(),
+            initial_capital=100_000.0,
+            seed=1,
         )
-        return best_params, best_score, calls
-
-    first_params, first_score, first_calls = run_once()
-    second_params, second_score, second_calls = run_once()
-
-    assert len(first_calls) == 5
-    assert first_calls == second_calls
-    assert first_params == second_params
-    assert first_score == second_score
-    for params in first_calls:
-        assert 1.0 <= params["entry_z"] <= 2.0
-        assert 2.0 <= params["stop_z"] <= 4.0
-    assert first_params == max(
-        first_calls, key=lambda params: params["entry_z"] * 10.0 + params["stop_z"]
-    )
-
-
-def test_bayes_or_random_fallback_runs_at_least_once(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    _force_random_fallback(monkeypatch)
-    calls = []
-
-    def objective(**params: float) -> float:
-        calls.append(params)
-        return 1.0
-
-    best_params, best_score = _bayes_or_random(
-        objective, {"entry_z": (1.0, 2.0)}, seed=1, init_points=-5, n_iter=0
-    )
-
-    assert len(calls) == 1
-    assert set(best_params) == {"entry_z"}
-    assert best_score == 1.0
 
 
 def test_grid_search_is_deterministic_and_selects_best() -> None:
@@ -197,9 +162,10 @@ def test_optimize_params_returns_original_configs_when_disabled_or_no_space(
 ) -> None:
     strategy = StrategyConfig(entry_z=1.1)
 
+    monkeypatch.setattr(optimize_mod, "_bayesian_optimizer_cls", lambda: object)
     monkeypatch.setattr(
         optimize_mod,
-        "_bayes_or_random",
+        "_bayes_optimize",
         lambda *args, **kwargs: pytest.fail("optimizer should not run"),
     )
     monkeypatch.setattr(
@@ -304,7 +270,8 @@ def test_optimize_params_scores_each_candidate_on_inner_validation_window(
 
     costs_obj = costs
     risk_obj = risk
-    monkeypatch.setattr(optimize_mod, "_bayes_or_random", fake_optimizer)
+    monkeypatch.setattr(optimize_mod, "_bayesian_optimizer_cls", lambda: object)
+    monkeypatch.setattr(optimize_mod, "_bayes_optimize", fake_optimizer)
     monkeypatch.setattr(optimize_mod, "run_baseline", fake_baseline)
     monkeypatch.setattr(optimize_mod, "run_engine", fake_engine)
 
@@ -382,7 +349,7 @@ def test_optimize_params_scores_gridsearch_candidates(
 
     monkeypatch.setattr(
         optimize_mod,
-        "_bayes_or_random",
+        "_bayes_optimize",
         lambda *args, **kwargs: pytest.fail("bayes optimizer should not run"),
     )
     monkeypatch.setattr(optimize_mod, "run_baseline", fake_baseline)
@@ -454,7 +421,8 @@ def test_optimize_params_records_bad_score_for_invalid_score(
         params = {"entry_z": 1.5}
         return params, objective(**params)
 
-    monkeypatch.setattr(optimize_mod, "_bayes_or_random", fake_optimizer)
+    monkeypatch.setattr(optimize_mod, "_bayesian_optimizer_cls", lambda: object)
+    monkeypatch.setattr(optimize_mod, "_bayes_optimize", fake_optimizer)
 
     best_strategy, trials, best = optimize_mod.optimize_params(
         _prices(),
@@ -474,12 +442,12 @@ def test_optimize_params_records_bad_score_for_invalid_score(
     assert best == {"score": BAD_SCORE, "params": {"entry_z": 1.5}}
 
 
-def _force_random_fallback(monkeypatch: pytest.MonkeyPatch) -> None:
+def _force_missing_bayes_opt(monkeypatch: pytest.MonkeyPatch) -> None:
     real_import = builtins.__import__
 
     def fake_import(name, globals=None, locals=None, fromlist=(), level=0):
         if name == "bayes_opt":
-            raise ImportError("force random fallback")
+            raise ImportError("force missing bayes_opt")
         return real_import(name, globals, locals, fromlist, level)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)

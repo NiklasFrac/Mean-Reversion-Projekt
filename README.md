@@ -46,6 +46,8 @@ Costs and position sizing are also configuration-driven.
 
 If `bo.enabled` or `gridsearch.enabled` is active, `backtest.optimize` tunes selected strategy parameters on the training part of each walk-forward window. The search space and trial budget are defined in `runs/configs/config_backtest.yaml`.
 
+Bayesian Optimization requires `bayesian-optimization`; when `bo.enabled` is true and the package is missing, the run fails.
+
 ## Output
 
 Download outputs:
